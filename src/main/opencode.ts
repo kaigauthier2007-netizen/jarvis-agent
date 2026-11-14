@@ -561,7 +561,7 @@ export class Opencode extends EventEmitter {
     // short retries are normal once or twice; a model that keeps retrying is stuck, so treat it like a limit too
     this.retryCount++
     const attempt = typeof st?.attempt === 'number' ? st.attempt : this.retryCount
-    if (!quota && wait < 60_000 && attempt < 3) return
+    if (!quota && wait < 20_000 && attempt < 2) return
     if (this.limitReported) return
     this.limitReported = true
     // stop the turn completely before anyone reacts: a retry sent while the abort is still settling gets aborted too
@@ -639,14 +639,14 @@ export class Opencode extends EventEmitter {
       if (this.pendingPerms.size || this.limitReported) return
       // a long-running tool (a build, a download) is quiet but not stuck
       for (const [, it] of this.items) if (it.kind === 'tool' && (it.tool.status === 'running' || it.tool.status === 'pending')) return
-      if (Date.now() - this.lastEventAt < 45_000) return
+      if (Date.now() - this.lastEventAt < 30_000) return
       this.limitReported = true
       if (this.stallTimer) clearInterval(this.stallTimer)
       this.stallTimer = null
       void (async () => {
         await this.abort().catch(() => {})
         await this.waitServerIdle()
-        this.emit('limit', { message: 'no response for 45 s', waitMs: 2 * 60_000, quota: false, stalled: true, free: false })
+        this.emit('limit', { message: 'no response for 30 s', waitMs: 2 * 60_000, quota: false, stalled: true, free: false })
       })()
     }, 5_000)
   }

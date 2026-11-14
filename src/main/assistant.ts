@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { createHash, randomUUID } from 'crypto'
 import { spawn } from 'child_process'
 import { DEFAULT_SETTINGS } from '../shared/types'
-import type { AppStatus, AssistantState, ChatItem, HighlightTarget, PermissionRequest, Routine, RoutineStep, ToolEvent } from '../shared/types'
+import type { AppStatus, AssistantState, ChatItem, HighlightTarget, ModelInfo, PermissionRequest, Routine, RoutineStep, ToolEvent } from '../shared/types'
 import { phraseScore, normalize } from '../shared/textmatch'
 import { SettingsStore, MemoryStore, RoutineStore, ThreadStore, dataDir } from './store'
 import { Opencode } from './opencode'
@@ -528,7 +528,7 @@ export class Assistant extends EventEmitter implements Hub {
     }
 
     try {
-      this.restorePrimaryModel()
+      await this.restorePrimaryModel()
       const s = this.settings()
       const displays = screen.getAllDisplays().map((d) => `${Math.round(d.size.width * d.scaleFactor)}x${Math.round(d.size.height * d.scaleFactor)}`)
       const system = buildSystemExtra({
@@ -562,36 +562,44 @@ export class Assistant extends EventEmitter implements Hub {
    * next usable model — first the user's fallback list (e.g. other Gemini models, each with its own quota), then the free
    * opencode models — and re-send the request. The user's own pick is restored once its block has expired.
    */
+  /** Fallback order: the free opencode models (best first), then the user's list (Google models), each only if available. */
+  private async modelOrder(fresh = true): Promise<{ order: string[]; models: ModelInfo[] }> {
+    const s = this.settings()
+    const models = fresh ? await this.opencode.listModels(true).catch(() => [] as ModelInfo[]) : await this.opencode.listModels(false)
+    const known = new Set(models.map((m) => m.id))
+    const rank = (id: string) => {
+      const i = Assistant.FREE_ORDER.indexOf(id.replace(/^opencode\//, ''))
+      return i < 0 ? 99 : i
+    }
+    const free = models.filter((m) => m.provider === 'opencode' && m.free && !/-vl-/.test(m.id)).map((m) => m.id).sort((a, b) => rank(a) - rank(b))
+    const rest = (s.fallbackModels ?? []).filter((id) => known.has(id) && !free.includes(id))
+    return { order: [...free, ...rest], models }
+  }
+
+  /**
+   * The current model hit its limit (or stalled): block it until its quota resets, move to the best model in the order
+   * that is still usable, and re-send the request right away.
+   */
   private async switchModel(waitMs: number): Promise<boolean> {
     const s = this.settings()
     const cur = s.model
-    if (!s.fallbackEnabled || !this.lastUserText || this.freeSwitches >= 6) return false
+    if (!s.fallbackEnabled || !this.lastUserText || this.freeSwitches >= 15) return false
     const now = Date.now()
     const blocked = { ...(s.freeBlocked ?? {}) }
     // hit the limit again within 3 h of an earlier block → it's the daily quota, whatever the short retry hint says
     const repeat = (blocked[cur] ?? 0) > now - 3 * 3_600_000
     for (const [k, until] of Object.entries(blocked)) if (until < now) delete blocked[k]
-    // the provider usually says when the quota resets (per-minute: seconds, daily: hours); without that, assume 30 min
     blocked[cur] = now + (waitMs > 0 ? waitMs + 5_000 : 30 * 60_000)
     if (repeat) blocked[cur] = Math.max(blocked[cur], now + msUntilPacificMidnight())
-    this.settingsStore.set({ freeBlocked: blocked, primaryModel: s.primaryModel || cur })
-    const models = await this.opencode.listModels(true).catch(() => [])
-    const known = new Set(models.map((m) => m.id))
-    const usable = (id: string) => id !== cur && !(blocked[id] > now)
-    const chain = (s.fallbackModels ?? []).filter((id) => known.has(id) && usable(id))
-    const free = models.filter((m) => m.provider === 'opencode' && m.free && !/-vl-/.test(m.id)).map((m) => m.id)
-    const rank = (id: string) => {
-      const i = Assistant.FREE_ORDER.indexOf(id.replace(/^opencode\//, ''))
-      return i < 0 ? 99 : i
-    }
-    const next = [...chain, ...free.filter((id) => usable(id) && !chain.includes(id)).sort((a, b) => rank(a) - rank(b))][0]
+    this.settingsStore.set({ freeBlocked: blocked })
+    const { order, models } = await this.modelOrder()
+    const next = order.find((id) => id !== cur && !(blocked[id] > now))
     if (!next) return false
     this.freeSwitches++
     this.settingsStore.set({ model: next })
     const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.replace(/^[^/]+\//, '')
     const ru = this.lastLang === 'ru'
-    this.emit('chat', { id: uid(), kind: 'system', text: ru ? `↻ Лимит модели «${name(cur)}» исчерпан — переключаюсь на «${name(next)}» и повторяю запрос.` : `↻ "${name(cur)}" hit its limit — switching to "${name(next)}" and retrying.`, at: now } satisfies ChatItem)
-    // the aborted turn has already settled on the server (opencode waits for that before reporting the limit)
+    this.emit('chat', { id: uid(), kind: 'system', text: ru ? `↻ «${name(cur)}» недоступна — переключаюсь на «${name(next)}» и повторяю запрос.` : `↻ "${name(cur)}" is out — switching to "${name(next)}" and retrying.`, at: now } satisfies ChatItem)
     try {
       await this.opencode.send(this.lastUserText, this.lastSystem, this.lastVia)
     } catch (e: any) {
@@ -601,17 +609,19 @@ export class Assistant extends EventEmitter implements Hub {
     return true
   }
 
-  /** Back on a fallback model but the user's own pick is usable again → switch back before the next request. */
-  private restorePrimaryModel() {
+  /** Before each request: if a better model in the order is usable again (its quota reset), move back up to it. */
+  private async restorePrimaryModel() {
     const s = this.settings()
-    const primary = s.primaryModel
-    if (!primary) return
-    if (primary === s.model) return void this.settingsStore.set({ primaryModel: '' })
-    if ((s.freeBlocked ?? {})[primary] > Date.now()) return
-    this.settingsStore.set({ model: primary, primaryModel: '' })
+    if (!s.fallbackEnabled) return
+    const { order, models } = await this.modelOrder(false)
+    if (!order.includes(s.model)) return // the user picked something outside the order on purpose
+    const now = Date.now()
+    const best = order.find((id) => !((s.freeBlocked ?? {})[id] > now))
+    if (!best || best === s.model || order.indexOf(best) > order.indexOf(s.model)) return
+    this.settingsStore.set({ model: best })
     const ru = this.lastLang === 'ru'
-    const name = primary.replace(/^[^/]+\//, '')
-    this.emit('chat', { id: uid(), kind: 'system', text: ru ? `↺ Модель «${name}» снова доступна — возвращаюсь к ней.` : `↺ "${name}" is available again — switching back to it.`, at: Date.now() } satisfies ChatItem)
+    const name = models.find((m) => m.id === best)?.name ?? best.replace(/^[^/]+\//, '')
+    this.emit('chat', { id: uid(), kind: 'system', text: ru ? `↺ «${name}» снова доступна — возвращаюсь к ней.` : `↺ "${name}" is available again — switching back to it.`, at: now } satisfies ChatItem)
   }
 
   /** Long pause since the last message → start a fresh conversation so old context doesn't bleed into new tasks. */
@@ -1027,6 +1037,7 @@ export class Assistant extends EventEmitter implements Hub {
       wait_for: q('Жду появления', 'Waiting for', i.text ? `«${clip(i.text, 30)}»` : i.window ? `«${clip(i.window, 30)}»` : ''),
       open_app: q('Запускаю', 'Launching', clip(i.name || i.app, 30)),
       open_url: q('Открываю сайт', 'Opening', host(i.url)),
+      compose_email: q('Готовлю письмо', 'Drafting an email to', clip(i.to || '', 30)),
       highlight: ['Показываю на экране', 'Pointing it out'],
       clipboard_get: ['Читаю буфер обмена', 'Reading the clipboard'],
       clipboard_set: ['Копирую в буфер обмена', 'Copying to the clipboard'],

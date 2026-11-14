@@ -1366,6 +1366,36 @@ export class JarvisMcp {
     )
 
     s.registerTool(
+      'compose_email',
+      {
+        description:
+          'ONE call to start an email: opens a ready new-message window (to, subject, body filled in) in the default mail app (Outlook, Mail, Gmail in the browser…). Use this instead of opening Outlook and clicking/typing fields. It does NOT send; the user reviews and presses Send.',
+        inputSchema: {
+          to: z.string().describe('recipient address(es), comma-separated; may be empty'),
+          subject: z.string(),
+          body: z.string().describe('plain-text body; new lines allowed'),
+          cc: z.string().optional()
+        }
+      },
+      async (a) => {
+        const g = await this.consent()
+        if (g) return g
+        const lp = this.loop('compose_email', a, true)
+        if (lp) return lp
+        const enc = (v: string) => encodeURIComponent(v)
+        const q = [`subject=${enc(a.subject)}`, `body=${enc(a.body.replace(/\r?\n/g, '\r\n'))}`]
+        if (a.cc) q.push(`cc=${enc(a.cc)}`)
+        const url = `mailto:${a.to.split(',').map((x) => encodeURIComponent(x.trim())).join(',')}?${q.join('&')}`
+        try {
+          await h.win.call('launch', { name: url, wait: 2500 }, 20000)
+          return this.result(`draft opened in the mail app (to: ${a.to || '—'}, subject: "${a.subject}") — not sent`, true, 1200)
+        } catch (e: any) {
+          return err(String(e?.message || e))
+        }
+      }
+    )
+
+    s.registerTool(
       'open_url',
       {
         description: 'Open a URL in the default browser (reuses the running browser: opens a new tab). Waits briefly and reports the active window.',
