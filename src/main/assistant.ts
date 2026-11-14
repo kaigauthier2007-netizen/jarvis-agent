@@ -163,7 +163,7 @@ export class Assistant extends EventEmitter implements Hub {
       this.setState('error')
       setTimeout(() => this.state === 'error' && this.setState('idle'), 2500)
     })
-    this.opencode.on('limit', async (l: { message: string; waitMs: number; quota: boolean; free: boolean }) => {
+    this.opencode.on('limit', async (l: { message: string; waitMs: number; quota: boolean; free: boolean; stalled?: boolean }) => {
       console.log('[agent] provider limit / long retry:', l.message, Math.round(l.waitMs / 1000) + 's')
       // free models have separate quotas: when one is used up, move to the next free model and redo the request
       if (await this.switchModel(l.waitMs)) return
@@ -588,8 +588,7 @@ export class Assistant extends EventEmitter implements Hub {
     const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.replace(/^[^/]+\//, '')
     const ru = this.lastLang === 'ru'
     this.emit('chat', { id: uid(), kind: 'system', text: ru ? `↻ Лимит модели «${name(cur)}» исчерпан — переключаюсь на «${name(next)}» и повторяю запрос.` : `↻ "${name(cur)}" hit its limit — switching to "${name(next)}" and retrying.`, at: now } satisfies ChatItem)
-    // let the aborted turn finish, then ask again with the new model
-    for (let i = 0; i < 50 && this.opencode.isBusy; i++) await new Promise((r) => setTimeout(r, 100))
+    // the aborted turn has already settled on the server (opencode waits for that before reporting the limit)
     try {
       await this.opencode.send(this.lastUserText, this.lastSystem, this.lastVia)
     } catch (e: any) {

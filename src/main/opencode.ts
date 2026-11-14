@@ -567,8 +567,11 @@ export class Opencode extends EventEmitter {
     // stop the turn completely before anyone reacts: a retry sent while the abort is still settling gets aborted too
     void (async () => {
       await this.abort().catch(() => {})
-      await new Promise((r) => setTimeout(r, 700))
-      this.emit('limit', { message: String(st?.message ?? ''), waitMs: Math.max(0, wait), quota, free: st?.action?.reason === 'free_tier_limit' })
+      await this.waitServerIdle()
+      const msg = String(st?.message ?? '')
+      // a used-up DAILY quota stays used up until midnight Pacific, whatever short retry delay the provider suggests
+      const daily = /per.?day|PerDay|daily/i.test(msg)
+      this.emit('limit', { message: msg, waitMs: daily ? Math.max(wait, msUntilPacificMidnight()) : Math.max(0, wait), quota, free: st?.action?.reason === 'free_tier_limit' })
     })()
   }
 
@@ -598,6 +601,7 @@ export class Opencode extends EventEmitter {
     this.lastEventAt = Date.now()
     this.setBusy(true)
     this.emit('turnStart', via)
+    this.armStallWatch()
     await this.req('POST', `/session/${this.sessionId}/prompt_async`, {
       agent: 'jarvis',
       model: { providerID, modelID: rest.join('/') },
@@ -608,6 +612,43 @@ export class Opencode extends EventEmitter {
 
   get lastVia() {
     return this.currentVia
+  }
+
+  /** After an abort the server needs a moment to settle; a prompt sent before that is dropped or aborted too. */
+  async waitServerIdle(maxMs = 6000) {
+    const until = Date.now() + maxMs
+    while (Date.now() < until) {
+      try {
+        const all: any = await this.req('GET', '/session/status')
+        const st = all?.[this.sessionId ?? '']
+        if (!st || st.type === 'idle') break
+      } catch {
+        break
+      }
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    await new Promise((r) => setTimeout(r, 400))
+  }
+
+  /** No event from the model for a long time while a turn is running → treat it as stuck and let the fallback act. */
+  private stallTimer: ReturnType<typeof setInterval> | null = null
+  private armStallWatch() {
+    if (this.stallTimer) clearInterval(this.stallTimer)
+    this.stallTimer = setInterval(() => {
+      if (!this.isBusy) return void (this.stallTimer && clearInterval(this.stallTimer), (this.stallTimer = null))
+      if (this.pendingPerms.size || this.limitReported) return
+      // a long-running tool (a build, a download) is quiet but not stuck
+      for (const [, it] of this.items) if (it.kind === 'tool' && (it.tool.status === 'running' || it.tool.status === 'pending')) return
+      if (Date.now() - this.lastEventAt < 45_000) return
+      this.limitReported = true
+      if (this.stallTimer) clearInterval(this.stallTimer)
+      this.stallTimer = null
+      void (async () => {
+        await this.abort().catch(() => {})
+        await this.waitServerIdle()
+        this.emit('limit', { message: 'no response for 45 s', waitMs: 2 * 60_000, quota: false, stalled: true, free: false })
+      })()
+    }, 5_000)
   }
 
   async abort() {
@@ -809,4 +850,11 @@ export class Opencode extends EventEmitter {
     } catch {}
     this.proc = null
   }
+}
+
+/** ms until the next midnight in America/Los_Angeles (when Google's daily free quotas reset) */
+function msUntilPacificMidnight(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(now).map((p) => [p.type, p.value]))
+  const sec = (Number(parts.hour) % 24) * 3600 + Number(parts.minute) * 60 + Number(parts.second)
+  return (24 * 3600 - sec) * 1000
 }
