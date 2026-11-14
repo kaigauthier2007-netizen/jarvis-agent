@@ -568,9 +568,12 @@ export class Assistant extends EventEmitter implements Hub {
     if (!s.fallbackEnabled || !this.lastUserText || this.freeSwitches >= 6) return false
     const now = Date.now()
     const blocked = { ...(s.freeBlocked ?? {}) }
+    // hit the limit again within 3 h of an earlier block → it's the daily quota, whatever the short retry hint says
+    const repeat = (blocked[cur] ?? 0) > now - 3 * 3_600_000
     for (const [k, until] of Object.entries(blocked)) if (until < now) delete blocked[k]
     // the provider usually says when the quota resets (per-minute: seconds, daily: hours); without that, assume 30 min
     blocked[cur] = now + (waitMs > 0 ? waitMs + 5_000 : 30 * 60_000)
+    if (repeat) blocked[cur] = Math.max(blocked[cur], now + msUntilPacificMidnight())
     this.settingsStore.set({ freeBlocked: blocked, primaryModel: s.primaryModel || cur })
     const models = await this.opencode.listModels(true).catch(() => [])
     const known = new Set(models.map((m) => m.id))
@@ -1234,4 +1237,11 @@ function wavMillis(wav: Buffer): number {
   } catch {
     return 8000
   }
+}
+
+/** ms until the next midnight in America/Los_Angeles (when Google's daily free quotas reset) */
+function msUntilPacificMidnight(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(now).map((p) => [p.type, p.value]))
+  const sec = (Number(parts.hour) % 24) * 3600 + Number(parts.minute) * 60 + Number(parts.second)
+  return (24 * 3600 - sec) * 1000
 }
