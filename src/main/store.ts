@@ -41,6 +41,14 @@ export class SettingsStore extends JsonStore<Settings> {
   constructor() {
     super(join(dataDir(), 'settings.json'), { ...DEFAULT_SETTINGS })
     this.data = { ...DEFAULT_SETTINGS, ...this.data }
+    // one-time switch of existing installs from 'auto' (which can land on Russian) to English
+    const d = this.data as Settings & { englishDefaults?: boolean }
+    if (!d.englishDefaults) {
+      if (d.interfaceLang === 'auto') d.interfaceLang = 'en'
+      if (d.sttLanguage === 'auto') d.sttLanguage = 'en'
+      d.englishDefaults = true
+      this.save()
+    }
   }
   get(): Settings {
     return this.data

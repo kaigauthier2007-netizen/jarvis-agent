@@ -66,7 +66,7 @@ export class Assistant extends EventEmitter implements Hub {
   private userSpeaking = false
   private bannerMessage = ''
   private activity = ''
-  private lastLang: 'ru' | 'en' = 'ru'
+  private lastLang: 'ru' | 'en' = 'en'
   private lastSpeechAt = 0
   private controlTimer: NodeJS.Timeout | null = null
   private controlOn = false
@@ -382,7 +382,8 @@ export class Assistant extends EventEmitter implements Hub {
   async ack(langHint = '') {
     const s = this.settings()
     if (s.wakeAck === 'off' || !s.voiceEnabled || this.speakingDepth > 0) return
-    const lang: 'ru' | 'en' = langHint === 'ru' || langHint === 'en' ? langHint : this.lastLang
+    const fixed = s.sttLanguage
+    const lang: 'ru' | 'en' = fixed === 'en' || fixed === 'ru' ? fixed : langHint === 'ru' || langHint === 'en' ? langHint : this.lastLang
     this.lastLang = lang
     const voice = lang === 'ru' ? s.voiceRu : s.voiceEn
     let wav: Buffer | undefined
@@ -463,10 +464,17 @@ export class Assistant extends EventEmitter implements Hub {
     await this.handleCommand(text, 'voice', lang)
   }
 
+  /** Language for this turn: a fixed speech language in Settings wins; otherwise detect (English unless Russian is clearly used). */
+  private pickLang(text: string, hint = ''): 'ru' | 'en' {
+    const fixed = this.settings().sttLanguage
+    if (fixed === 'en' || fixed === 'ru') return fixed
+    return hint === 'ru' || /[а-яё]/i.test(text) ? 'ru' : 'en'
+  }
+
   /** Entry point for anything the user says or types. */
   async handleCommand(text: string, via: 'voice' | 'text', lang = '') {
     this.lastWasVoice = via === 'voice'
-    this.lastLang = lang === 'ru' || /[а-яё]/i.test(text) ? 'ru' : 'en'
+    this.lastLang = this.pickLang(text, lang)
     if (this.speakingDepth > 0) this.stopSpeaking()
     if (this.opencode.isBusy) {
       this.mcp.computer.cancel() // a new request supersedes the running one: drop any queued clicks/keys
@@ -525,7 +533,7 @@ export class Assistant extends EventEmitter implements Hub {
       const system = buildSystemExtra({
         memory: this.memory.promptBlock(),
         routines: this.routines.list(),
-        lang: lang === 'ru' || /[а-яё]/i.test(text) ? 'Russian' : 'English',
+        lang: this.lastLang === 'ru' ? 'Russian' : 'English',
         via,
         screen: displays.join(' + '),
         vision: this.isVision(),
