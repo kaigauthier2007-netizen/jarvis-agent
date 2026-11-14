@@ -555,6 +555,11 @@ export class Opencode extends EventEmitter {
    * The provider refused the request and opencode is retrying. Short retries are fine; a quota (free tier used up)
    * or a retry minutes/hours away would leave Jarvis "working" in silence, so stop the turn and say why.
    */
+  /** Test helper ("/test fallback"): behave exactly as if the provider said the current model's quota ran out. */
+  simulateLimit() {
+    this.onRetry({ type: 'retry', attempt: 1, message: 'quota exceeded (fallback test)', next: Date.now() + 60_000, test: true })
+  }
+
   private onRetry(st: any) {
     const wait = typeof st?.next === 'number' ? st.next - Date.now() : 0
     const quota = st?.action?.reason === 'free_tier_limit' || /free usage|quota|limit (reached|exceeded)|insufficient (credit|balance)|resource.?exhausted|rate.?limit|too many requests|\b429\b/i.test(String(st?.message ?? ''))
@@ -571,7 +576,7 @@ export class Opencode extends EventEmitter {
       const msg = String(st?.message ?? '')
       // a used-up DAILY quota stays used up until midnight Pacific, whatever short retry delay the provider suggests
       const daily = /per.?day|PerDay|daily/i.test(msg)
-      this.emit('limit', { message: msg, waitMs: daily ? Math.max(wait, msUntilPacificMidnight()) : Math.max(0, wait), quota, free: st?.action?.reason === 'free_tier_limit' })
+      this.emit('limit', { message: msg, waitMs: daily ? Math.max(wait, msUntilPacificMidnight()) : Math.max(0, wait), quota, free: st?.action?.reason === 'free_tier_limit', test: !!st?.test })
     })()
   }
 

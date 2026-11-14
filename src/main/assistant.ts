@@ -82,6 +82,7 @@ export class Assistant extends EventEmitter implements Hub {
   private lastVia: 'voice' | 'text' = 'text'
   private lastUserText = ''
   private freeSwitches = 0
+  private fallbackTest = false
   private watchdog: NodeJS.Timeout | null = null
   private ackCache = new Map<string, Buffer>()
   private lastAck = ''
@@ -163,10 +164,10 @@ export class Assistant extends EventEmitter implements Hub {
       this.setState('error')
       setTimeout(() => this.state === 'error' && this.setState('idle'), 2500)
     })
-    this.opencode.on('limit', async (l: { message: string; waitMs: number; quota: boolean; free: boolean; stalled?: boolean }) => {
+    this.opencode.on('limit', async (l: { message: string; waitMs: number; quota: boolean; free: boolean; stalled?: boolean; test?: boolean }) => {
       console.log('[agent] provider limit / long retry:', l.message, Math.round(l.waitMs / 1000) + 's')
       // free models have separate quotas: when one is used up, move to the next free model and redo the request
-      if (await this.switchModel(l.waitMs)) return
+      if (await this.switchModel(l.waitMs, !!l.test)) return
       const ru = this.lastLang === 'ru'
       const hours = l.waitMs > 3_600_000 ? Math.round(l.waitMs / 3_600_000) : 0
       const when = l.waitMs > 60_000 ? (ru ? (hours ? ` (снова доступна примерно через ${hours} ч)` : ` (снова доступна через ${Math.ceil(l.waitMs / 60_000)} мин)`) : hours ? ` (available again in about ${hours} h)` : ` (available again in ${Math.ceil(l.waitMs / 60_000)} min)`) : ''
@@ -498,6 +499,13 @@ export class Assistant extends EventEmitter implements Hub {
       return
     }
 
+    // "/test fallback": ask something, then pretend the model ran out of quota mid-answer → watch the switch (and the
+    // switch back a minute later, on the next request)
+    if (/^\/?test[ -]?(fallback|switch)$/i.test(text.trim())) {
+      text = 'Fallback test: answer in one short sentence which model you are and that the switch worked. Do not use any tools.'
+      this.fallbackTest = true
+    }
+
     // instant commands (volume, media keys, desktop) never wait for the model
     const fast = matchFast(text)
     if (fast) {
@@ -548,6 +556,11 @@ export class Assistant extends EventEmitter implements Hub {
       this.lastUserText = text
       this.freeSwitches = 0
       await this.opencode.send(text, system, via)
+      if (this.fallbackTest) {
+        this.fallbackTest = false
+        this.emit('chat', { id: uid(), kind: 'system', text: '⚙ Fallback test: pretending this model just ran out of quota…', at: Date.now() } satisfies ChatItem)
+        setTimeout(() => this.opencode.simulateLimit(), 1200)
+      }
     } catch (e: any) {
       this.emit('chat', { id: uid(), kind: 'system', text: `⚠ ${e?.message || e}`, at: Date.now() } satisfies ChatItem)
       this.setState('idle')
@@ -580,14 +593,14 @@ export class Assistant extends EventEmitter implements Hub {
    * The current model hit its limit (or stalled): block it until its quota resets, move to the best model in the order
    * that is still usable, and re-send the request right away.
    */
-  private async switchModel(waitMs: number): Promise<boolean> {
+  private async switchModel(waitMs: number, test = false): Promise<boolean> {
     const s = this.settings()
     const cur = s.model
     if (!s.fallbackEnabled || !this.lastUserText || this.freeSwitches >= 15) return false
     const now = Date.now()
     const blocked = { ...(s.freeBlocked ?? {}) }
     // hit the limit again within 3 h of an earlier block → it's the daily quota, whatever the short retry hint says
-    const repeat = (blocked[cur] ?? 0) > now - 3 * 3_600_000
+    const repeat = !test && (blocked[cur] ?? 0) > now - 3 * 3_600_000
     for (const [k, until] of Object.entries(blocked)) if (until < now) delete blocked[k]
     blocked[cur] = now + (waitMs > 0 ? waitMs + 5_000 : 30 * 60_000)
     if (repeat) blocked[cur] = Math.max(blocked[cur], now + msUntilPacificMidnight())
