@@ -90,6 +90,10 @@ function createMain() {
     if (!s.startMinimized) mainWin?.show()
   })
   // closing to the tray DESTROYS the window (≈200 MB of renderer memory); showMain() rebuilds it from main-process state
+  // closing the main window quits Jarvis completely (no tray, no HUD, no background processes)
+  mainWin.on('close', () => {
+    if (!quitting) app.quit()
+  })
   mainWin.on('closed', () => {
     mainWin = null
     syncHud()
@@ -564,8 +568,18 @@ async function debugShots(dir: string) {
 }
 
 app.on('second-instance', showMain)
-app.on('before-quit', () => {
+let cleanedUp = false
+app.on('before-quit', (e) => {
   quitting = true
+  if (cleanedUp) return
+  // stop the agent server, speech, voice and Windows bridges before exiting so nothing is left in Task Manager
+  e.preventDefault()
+  cleanedUp = true
+  tray?.destroy()
+  tray = null
+  if (hudWin && !hudWin.isDestroyed()) hudWin.destroy()
+  const dispose = assistant ? assistant.dispose().catch(() => {}) : Promise.resolve()
+  void Promise.race([dispose, new Promise((r) => setTimeout(r, 4000))]).finally(() => app.exit(0))
 })
 app.on('will-quit', () => globalShortcut.unregisterAll())
 app.on('window-all-closed', () => {})

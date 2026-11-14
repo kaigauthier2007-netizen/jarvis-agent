@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, spawnSync, ChildProcess } from 'child_process'
 import { createServer } from 'net'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -798,7 +798,9 @@ export class Opencode extends EventEmitter {
     this.abortSSE?.abort()
     this.setStatus('stopped')
     try {
-      this.proc?.kill()
+      // opencode starts its own helpers (MCP connectors, browsers): end the whole process tree, not just the server
+      if (process.platform === 'win32' && this.proc?.pid) spawnSync('taskkill', ['/pid', String(this.proc.pid), '/T', '/F'], { windowsHide: true })
+      else this.proc?.kill()
     } catch {}
     this.proc = null
   }
