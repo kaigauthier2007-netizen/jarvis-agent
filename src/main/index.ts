@@ -252,6 +252,8 @@ function buildTray() {
 
 function applySettings(patch: Partial<Settings>) {
   const before = assistant.settings()
+  // picking a model by hand makes it the new choice: forget any temporary fallback
+  if (patch.model !== undefined && patch.primaryModel === undefined) patch = { ...patch, primaryModel: '' }
   const next = assistant.settingsStore.set(patch)
   broadcast(IPC.settingsChanged, next)
   if (patch.sttModel && patch.sttModel !== before.sttModel) assistant.speech.restart()
@@ -458,6 +460,8 @@ async function autoInstall() {
 }
 
 function wireAssistantEvents() {
+  // model switches made by the automatic fallback must show up in Settings too
+  assistant.settingsStore.on('change', (next: Settings) => broadcast(IPC.settingsChanged, next))
   assistant.on('status', (s) => broadcast(IPC.status, s))
   assistant.on('chat', (item) => toUi(IPC.chat, item))
   assistant.on('permission', (r) => {

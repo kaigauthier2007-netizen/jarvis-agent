@@ -32,6 +32,12 @@ export interface Settings {
   agentIdleMinutes: number
   /** free opencode models that hit their usage limit → when they are usable again (ms epoch) */
   freeBlocked: Record<string, number>
+  /** when a model hits its limit, switch to the next model in fallbackModels (then the free opencode models) and retry */
+  fallbackEnabled: boolean
+  /** models to try, in order, when the current one is out of quota (providerID/modelID) */
+  fallbackModels: string[]
+  /** the model the user picked, while Jarvis is temporarily on a fallback ('' = not on a fallback) */
+  primaryModel: string
   /** ask = tell me and let me download, auto = download in the background, off = never check */
   autoUpdate: 'ask' | 'auto' | 'off'
   visionModel: string
@@ -87,6 +93,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autoNewThreadMinutes: 45,
   agentIdleMinutes: 10,
   freeBlocked: {},
+  fallbackEnabled: true,
+  fallbackModels: ['google/gemini-4-hydrogen', 'google/gemini-3.8-flash', 'google/gemini-3.6-flash', 'google/gemini-3.5-flash-lite', 'google/gemini-3.1-flash-lite'],
+  primaryModel: '',
   autoUpdate: 'ask',
   visionModel: 'auto',
   cloneOffered: false,

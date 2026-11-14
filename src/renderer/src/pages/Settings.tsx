@@ -271,6 +271,9 @@ export function SettingsPage() {
                       onChange={(v) => patch({ permissionMode: v })}
                     />
                   </Row>
+                  <Row label={t('settings.fallback')} hint={t('settings.fallbackHint')}>
+                    <Switch on={s.fallbackEnabled} onChange={(v) => patch({ fallbackEnabled: v })} />
+                  </Row>
                   <Row label={t('settings.agentIdle')} hint={t('settings.agentIdleHint')}>
                     <Slider value={s.agentIdleMinutes} min={0} max={60} step={5} onChange={(v) => patch({ agentIdleMinutes: v })} />
                   </Row>
