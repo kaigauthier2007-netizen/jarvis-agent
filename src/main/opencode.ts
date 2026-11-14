@@ -549,6 +549,7 @@ export class Opencode extends EventEmitter {
   /** true when the last turn ended because the user stopped it (so nothing should auto-continue it) */
   aborted = false
   private limitReported = false
+  private retryCount = 0
 
   /**
    * The provider refused the request and opencode is retrying. Short retries are fine; a quota (free tier used up)
@@ -556,8 +557,11 @@ export class Opencode extends EventEmitter {
    */
   private onRetry(st: any) {
     const wait = typeof st?.next === 'number' ? st.next - Date.now() : 0
-    const quota = st?.action?.reason === 'free_tier_limit' || /free usage|quota|limit (reached|exceeded)|insufficient (credit|balance)/i.test(String(st?.message ?? ''))
-    if (!quota && wait < 60_000) return
+    const quota = st?.action?.reason === 'free_tier_limit' || /free usage|quota|limit (reached|exceeded)|insufficient (credit|balance)|resource.?exhausted|rate.?limit|too many requests|\b429\b/i.test(String(st?.message ?? ''))
+    // short retries are normal once or twice; a model that keeps retrying is stuck, so treat it like a limit too
+    this.retryCount++
+    const attempt = typeof st?.attempt === 'number' ? st.attempt : this.retryCount
+    if (!quota && wait < 60_000 && attempt < 3) return
     if (this.limitReported) return
     this.limitReported = true
     // stop the turn completely before anyone reacts: a retry sent while the abort is still settling gets aborted too
@@ -587,6 +591,7 @@ export class Opencode extends EventEmitter {
     this.currentVia = via
     this.aborted = false
     this.limitReported = false
+    this.retryCount = 0
     const [providerID, ...rest] = this.getSettings().model.split('/')
     const cur = this.threads.current
     if (cur) this.threads.touch(cur.id, text.replace(/\s+/g, ' ').slice(0, 48))
