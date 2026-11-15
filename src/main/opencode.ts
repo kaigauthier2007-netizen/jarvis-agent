@@ -162,6 +162,18 @@ export class Opencode extends EventEmitter {
         // of those hosts so the budget never under-counts
         ...(s.openrouterKey ? { openrouter: {
           models: {
+            // GLM 5.3 Flash: same model as the free one, but paid (no daily quota) on the fastest host, and it reads
+            // screenshots itself — screen clicks don't wait for a separate vision model
+            'z-ai/glm-5.3-flash:nitro': {
+              name: 'GLM 5.3 Flash (fastest host)',
+              tool_call: true,
+              reasoning: true,
+              temperature: true,
+              attachment: true,
+              modalities: { input: ['text', 'image'], output: ['text'] },
+              cost: { input: 0.225, output: 0.75, cache_read: 0.225 },
+              limit: { context: 262144, output: 32768 }
+            },
             'openai/gpt-oss-120b:nitro': {
               name: 'GPT-OSS 120B (fastest host)',
               tool_call: true,

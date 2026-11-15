@@ -17,6 +17,7 @@ import { Overlay } from './overlay'
 import { XttsSidecar } from './xtts'
 import { buildSystemExtra } from './agent-prompt'
 import { matchFast } from './fast-commands'
+import { matchYouTube, resultsUrl, searchFirst } from './youtube'
 import { School, matchSchool } from './school'
 import { PAID_MODELS, PRICES, addUsage, budgetView, costUsd, describeBudget, fetchCadPerUsd, freshUsage } from '../shared/paid'
 import { pathsFor } from './models'
@@ -61,6 +62,8 @@ export class Assistant extends EventEmitter implements Hub {
   private pendingConfirms = new Map<string, (ok: boolean) => void>()
   private sayCalledThisTurn = false
   private lastAssistantText = ''
+  /** this chat as shown (for "export this chat"); streaming items are replaced by id */
+  private log = new Map<string, ChatItem & { model?: string }>()
   private lastWasVoice = false
   private busyTranscribing = false
   private commandListening = false
@@ -153,7 +156,15 @@ export class Assistant extends EventEmitter implements Hub {
       this.settingsStore.set({ cloneOffered: true, ...(local ? { voiceRu: 'xtts:jarvis', voiceEn: 'xtts:jarvis' } : {}) })
     }
     this.opencode = new Opencode(() => this.settings(), { mcpUrl: this.mcp.url, mcpToken: this.mcp.token }, this.threads)
-    this.opencode.on('reset', () => this.emit('chatReset'))
+    this.opencode.on('reset', () => {
+      this.log.clear()
+      this.emit('chatReset')
+    })
+    this.on('chat', (it: ChatItem) => {
+      const prev = this.log.get(it.id)
+      this.log.set(it.id, { ...it, model: prev?.model ?? (it.kind === 'assistant' || it.kind === 'tool' ? this.opencode.modelName(this.settings().model) : undefined) })
+      if (this.log.size > 600) this.log.delete(this.log.keys().next().value!)
+    })
     this.opencode.on('usage', (u: { id: string; model: string; tokens: any; cost: number }) => this.onUsage(u))
     this.opencode.on('chat', (item: ChatItem) => {
       if (item.kind === 'assistant') this.lastAssistantText = item.text
@@ -546,6 +557,40 @@ export class Assistant extends EventEmitter implements Hub {
       }
     }
 
+    // "export this chat" — written straight from the chat log, never by digging into opencode's database
+    if (/^(please )?(export|save|share|download)( this| the| my)? (chat|conversation)( to (a )?file)?$/i.test(text.trim().replace(/[.!?]+$/, ''))) {
+      const file = this.exportChat()
+      const say = 'Chat saved to Documents, Jarvis folder.'
+      this.emit('chat', { id: uid(), kind: 'system', text: `⚡ Chat exported: ${file}`, at: Date.now() } satisfies ChatItem)
+      void this.win.call('launch', { name: file, wait: 0 }, 15000).catch(() => {})
+      if (via === 'voice') void this.say(say)
+      return
+    }
+
+    // YouTube search / play the first video: straight from YouTube's data, no screen reading (~1 s)
+    const yt = matchYouTube(text)
+    if (yt) {
+      const t0 = Date.now()
+      try {
+        let url = resultsUrl(yt.query)
+        let say = `Searching YouTube for ${yt.query}.`
+        if (yt.play) {
+          const v = await searchFirst(yt.query)
+          if (v) {
+            url = `https://www.youtube.com/watch?v=${v.id}`
+            say = `Playing "${v.title}".`
+          }
+        }
+        await this.win.call('launch', { name: url, wait: 0 }, 15000)
+        this.emit('chat', { id: uid(), kind: 'system', text: `⚡ ${say} (${((Date.now() - t0) / 1000).toFixed(1)} s)`, at: Date.now() } satisfies ChatItem)
+        this.lastAssistantText = say
+        if (via === 'voice') void this.say(say)
+        return
+      } catch (e: any) {
+        console.warn('[youtube] instant path failed, falling back to the agent:', e?.message || e)
+      }
+    }
+
     // "how much budget is left?" — answered from the local usage counter
     if ((/\b(groq|openrouter|open router|budget)\b/i.test(text) || /\b(ai|model|paid|jarvis|my)\s+(usage|credits?|spend|spending)\b/i.test(text)) && /\b(how much|left|remaining|used|check|status|usage|running out|pace)\b/i.test(text) && text.length < 90 && !/\b(email|send|write|make|create)\b/i.test(text)) {
       const answer = this.budgetText()
@@ -709,6 +754,26 @@ export class Assistant extends EventEmitter implements Hub {
   }
 
   /** paid model: switched on and still under this month's cap */
+  /** markdown copy of this chat in Documents\\Jarvis (time and model per message) */
+  private exportChat(): string {
+    const t = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const lines = [`# Jarvis chat — ${new Date().toLocaleString()}`, '']
+    for (const it of this.log.values()) {
+      if (it.kind === 'user') lines.push(`## You (${it.via}) · ${t(it.at)}`, '', it.text, '')
+      else if (it.kind === 'assistant') lines.push(`## Jarvis · ${t(it.at)}${it.model ? ' · ' + it.model : ''}`, '', it.text, '')
+      else if (it.kind === 'say') lines.push(`> said: ${it.text}`, '')
+      else if (it.kind === 'system') lines.push(`> ${it.text}`, '')
+      else if (it.kind === 'tool') lines.push(`- ${t(it.at)} \`${it.tool.tool}\` ${it.tool.status}${it.tool.title ? ' — ' + it.tool.title : ''}`)
+    }
+    const dir = join(app.getPath('documents'), 'Jarvis')
+    mkdirSync(dir, { recursive: true })
+    const d = new Date()
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    const file = join(dir, `chat-${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}.md`)
+    writeFileSync(file, lines.join('\n'), 'utf8')
+    return file
+  }
+
   private paidAllowed(): boolean {
     const s = this.settings()
     if (!s.paidEnabled || !(s.paidBudgetCad > 0)) return false

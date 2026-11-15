@@ -16,7 +16,9 @@ export interface Tokens {
 
 /** USD per 1M tokens (list prices, November 2026) */
 export const PRICES: Record<string, { input: number; cached: number; output: number }> = {
-  // OpenRouter "nitro" = fastest host; counted at Cerebras' price (the dearest fast host)
+  // OpenRouter "nitro" = fastest host. GLM 5.3 Flash sees the screen itself (no separate vision step); counted at
+  // the dearest host's price so the budget never under-counts
+  'openrouter/z-ai/glm-5.3-flash:nitro': { input: 0.225, cached: 0.225, output: 0.75 },
   'openrouter/openai/gpt-oss-120b:nitro': { input: 0.35, cached: 0.35, output: 0.75 },
   'groq/openai/gpt-oss-120b': { input: 0.15, cached: 0.075, output: 0.6 },
   'groq/openai/gpt-oss-20b': { input: 0.075, cached: 0.037, output: 0.3 },
@@ -24,7 +26,7 @@ export const PRICES: Record<string, { input: number; cached: number; output: num
 }
 
 /** paid fast models Jarvis knows, best first (OpenRouter works today; Groq's paid plan is paused for new accounts) */
-export const PAID_MODELS = ['openrouter/openai/gpt-oss-120b:nitro', 'groq/openai/gpt-oss-120b']
+export const PAID_MODELS = ['openrouter/z-ai/glm-5.3-flash:nitro', 'openrouter/openai/gpt-oss-120b:nitro', 'groq/openai/gpt-oss-120b']
 
 export function costUsd(model: string, t: Tokens, reported = 0): number {
   const p = PRICES[model]
