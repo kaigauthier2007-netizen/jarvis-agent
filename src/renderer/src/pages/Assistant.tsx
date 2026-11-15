@@ -70,21 +70,9 @@ function ToolCard({ tool }: { tool: ToolEvent }) {
   )
 }
 
-/** Long answers are shown collapsed (the gist is spoken); expand on demand. */
-function Collapsible({ children, done, long }: { children: React.ReactNode; done: boolean; long: boolean }) {
-  const [open, setOpen] = useState(false)
-  const { t } = useT()
-  const clamp = long && !open
-  return (
-    <>
-      <div className={'clamp' + (clamp ? ' on' : '')}>{children}</div>
-      {long && done && (
-        <button className="more" onClick={() => setOpen(!open)}>
-          {open ? t('chat.showLess') : t('chat.showMore')}
-        </button>
-      )}
-    </>
-  )
+/** Answers are always shown in full (no "Show full response" button). */
+function Collapsible({ children }: { children: React.ReactNode; done: boolean; long: boolean }) {
+  return <div className="clamp">{children}</div>
 }
 
 function ThinkingPill({ item }: { item: Extract<ChatItem, { kind: 'thinking' }> }) {
