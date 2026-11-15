@@ -74,6 +74,29 @@ export interface Settings {
   canvasFeed: string
   /** Google Calendar secret iCal address(es), one per line */
   calendarIcs: string
+  /** use the paid fast model (Groq) first, within the monthly budget */
+  paidEnabled: boolean
+  paidModel: string
+  /** monthly cap in Canadian dollars */
+  paidBudgetCad: number
+  paidUsage?: PaidUsage
+  /** Bank of Canada USD→CAD rate, refreshed daily */
+  cadPerUsd: number
+  cadRateAt: number
+  /** 'YYYY-MM' when the 80 % warning was shown */
+  paidWarned: string
+  /** drive the user's real Chrome / Edge through the Playwright extension */
+  browserControl: boolean
+  browserChannel: 'chrome' | 'msedge'
+  /** PLAYWRIGHT_MCP_EXTENSION_TOKEN from the extension (skips the approval page) */
+  browserToken: string
+}
+
+export interface PaidUsage {
+  month: string
+  usd: number
+  requests: number
+  days: Record<string, number>
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -134,7 +157,16 @@ export const DEFAULT_SETTINGS: Settings = {
   canvasUrl: 'https://canvas.ubc.ca',
   canvasToken: '',
   canvasFeed: '',
-  calendarIcs: ''
+  calendarIcs: '',
+  paidEnabled: true,
+  paidModel: 'groq/openai/gpt-oss-120b',
+  paidBudgetCad: 5,
+  cadPerUsd: 1.4257,
+  cadRateAt: 0,
+  paidWarned: '',
+  browserControl: false,
+  browserChannel: 'chrome',
+  browserToken: ''
 }
 
 export interface Thread {

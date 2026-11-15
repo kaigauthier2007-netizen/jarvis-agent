@@ -18,6 +18,7 @@ import { XttsSidecar } from './xtts'
 import { buildSystemExtra } from './agent-prompt'
 import { matchFast } from './fast-commands'
 import { School, matchSchool } from './school'
+import { addUsage, budgetView, costUsd, describeBudget, fetchCadPerUsd, freshUsage } from '../shared/paid'
 import { pathsFor } from './models'
 
 let idSeq = 0
@@ -150,6 +151,7 @@ export class Assistant extends EventEmitter implements Hub {
     }
     this.opencode = new Opencode(() => this.settings(), { mcpUrl: this.mcp.url, mcpToken: this.mcp.token }, this.threads)
     this.opencode.on('reset', () => this.emit('chatReset'))
+    this.opencode.on('usage', (u: { id: string; model: string; tokens: any; cost: number }) => this.onUsage(u))
     this.opencode.on('chat', (item: ChatItem) => {
       if (item.kind === 'assistant') this.lastAssistantText = item.text
       if (item.kind === 'tool') this.onTool(item.tool)
@@ -218,6 +220,8 @@ export class Assistant extends EventEmitter implements Hub {
     void this.opencode.start()
     this.prewarmVoices()
     this.school.startWarm()
+    void this.refreshRate()
+    setInterval(() => void this.refreshRate(), 6 * 3_600_000)
     this.emitStatus()
   }
 
@@ -532,6 +536,15 @@ export class Assistant extends EventEmitter implements Hub {
       }
     }
 
+    // "how much Groq budget is left?" — answered from the local usage counter
+    if ((/\b(groq|budget)\b/i.test(text) || /\b(ai|model|paid|jarvis|my)\s+(usage|credits?|spend|spending)\b/i.test(text)) && /\b(how much|left|remaining|used|check|status|usage|running out|pace)\b/i.test(text) && text.length < 90 && !/\b(email|send|write|make|create)\b/i.test(text)) {
+      const answer = this.budgetText()
+      this.emit('chat', { id: uid(), kind: 'assistant', text: answer, at: Date.now(), done: true } satisfies ChatItem)
+      this.lastAssistantText = answer
+      if (via === 'voice') void this.say(answer)
+      return
+    }
+
     // calendar / Canvas questions: answered straight from the data (prefetched), no model round-trip
     const sq = matchSchool(text)
     if (sq && (sq.kind === 'calendar' ? this.school.hasCalendar : sq.kind === 'due' ? this.school.hasCanvas : this.school.hasCanvasApi)) {
@@ -573,7 +586,8 @@ export class Assistant extends EventEmitter implements Hub {
         vision: this.isVision(),
         time: new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' }),
         custom: s.customSystemPrompt,
-        connectors: (s.connectors ?? []).filter((c) => c.enabled).map((c) => c.id)
+        connectors: (s.connectors ?? []).filter((c) => c.enabled).map((c) => c.id),
+        browser: s.browserControl
       })
       this.nudges = 0
       this.lastSystem = system
@@ -610,8 +624,9 @@ export class Assistant extends EventEmitter implements Hub {
       return i < 0 ? 99 : i
     }
     const free = models.filter((m) => m.provider === 'opencode' && m.free && !/-vl-/.test(m.id)).map((m) => m.id).sort((a, b) => rank(a) - rank(b))
-    const rest = (s.fallbackModels ?? []).filter((id) => known.has(id) && !free.includes(id))
-    return { order: [...free, ...rest], models }
+    const paid = this.paidAllowed() && known.has(s.paidModel) ? [s.paidModel] : []
+    const rest = (s.fallbackModels ?? []).filter((id) => known.has(id) && !free.includes(id) && !paid.includes(id))
+    return { order: [...paid, ...free, ...rest], models }
   }
 
   /**
@@ -625,9 +640,9 @@ export class Assistant extends EventEmitter implements Hub {
     const now = Date.now()
     const blocked = { ...(s.freeBlocked ?? {}) }
     // hit the limit again within 3 h of an earlier block → it's the daily quota, whatever the short retry hint says
-    const repeat = !test && (blocked[cur] ?? 0) > now - 3 * 3_600_000
+    const repeat = !test && cur !== s.paidModel && (blocked[cur] ?? 0) > now - 3 * 3_600_000
     for (const [k, until] of Object.entries(blocked)) if (until < now) delete blocked[k]
-    blocked[cur] = now + (waitMs > 0 ? waitMs + 5_000 : 30 * 60_000)
+    blocked[cur] = now + (waitMs > 0 ? waitMs + 5_000 : cur === s.paidModel ? 60_000 : 30 * 60_000)
     if (repeat) blocked[cur] = Math.max(blocked[cur], now + msUntilPacificMidnight())
     this.settingsStore.set({ freeBlocked: blocked })
     const { order, models } = await this.modelOrder()
@@ -652,14 +667,57 @@ export class Assistant extends EventEmitter implements Hub {
     const s = this.settings()
     if (!s.fallbackEnabled) return
     const { order, models } = await this.modelOrder(false)
-    if (!order.includes(s.model)) return // the user picked something outside the order on purpose
     const now = Date.now()
+    const curOut = s.model === s.paidModel && !this.paidAllowed()
+    if (!order.includes(s.model) && !curOut) return // the user picked something outside the order on purpose
     const best = order.find((id) => !((s.freeBlocked ?? {})[id] > now))
-    if (!best || best === s.model || order.indexOf(best) > order.indexOf(s.model)) return
+    const curBlocked = curOut || (s.freeBlocked ?? {})[s.model] > now
+    if (!best || best === s.model || (!curBlocked && order.indexOf(best) > order.indexOf(s.model))) return
     this.settingsStore.set({ model: best })
     const ru = this.lastLang === 'ru'
     const name = models.find((m) => m.id === best)?.name ?? best.replace(/^[^/]+\//, '')
     this.emit('chat', { id: uid(), kind: 'system', text: ru ? `↺ «${name}» снова доступна — возвращаюсь к ней.` : `↺ "${name}" is available again — switching back to it.`, at: now } satisfies ChatItem)
+  }
+
+  /** paid model: switched on and still under this month's cap */
+  private paidAllowed(): boolean {
+    const s = this.settings()
+    if (!s.paidEnabled || !s.paidModel || !(s.paidBudgetCad > 0)) return false
+    return !budgetView(s.paidUsage, s.paidBudgetCad, s.cadPerUsd || 1.4257).over
+  }
+
+  private budgetText(): string {
+    const s = this.settings()
+    if (!s.paidEnabled) return 'The paid Groq model is switched off (Settings → AI agent → Fast model). I am using the free models.'
+    return describeBudget(budgetView(s.paidUsage, s.paidBudgetCad, s.cadPerUsd || 1.4257))
+  }
+
+  /** what each assistant message has already been charged (the event repeats while the message streams) */
+  private charged = new Map<string, number>()
+  private onUsage(u: { id: string; model: string; tokens: any; cost: number }) {
+    if (!u.model.startsWith('groq/')) return
+    const s = this.settings()
+    const total = costUsd(u.model, u.tokens ?? {}, u.cost)
+    const prev = this.charged.get(u.id)
+    const delta = total - (prev ?? 0)
+    if (delta <= 0 && prev !== undefined) return
+    this.charged.set(u.id, total)
+    if (this.charged.size > 500) this.charged.delete(this.charged.keys().next().value as string)
+    const usage = addUsage(freshUsage(s.paidUsage), Math.max(0, delta), prev === undefined)
+    this.settingsStore.set({ paidUsage: usage })
+    const v = budgetView(usage, s.paidBudgetCad, s.cadPerUsd || 1.4257)
+    if (v.pct >= 80 && s.paidWarned !== usage.month) {
+      this.settingsStore.set({ paidWarned: usage.month })
+      this.emit('chat', { id: uid(), kind: 'system', text: `⚠ ${describeBudget(v)}${v.over ? '' : ' I switch to the free models automatically at the cap.'}`, at: Date.now() } satisfies ChatItem)
+    }
+  }
+
+  /** daily Bank of Canada USD→CAD rate for the budget */
+  private async refreshRate() {
+    const s = this.settings()
+    if (Date.now() - (s.cadRateAt || 0) < 20 * 3_600_000) return
+    const rate = await fetchCadPerUsd(s.cadPerUsd || 1.4257)
+    this.settingsStore.set({ cadPerUsd: rate, cadRateAt: Date.now() })
   }
 
   /** Long pause since the last message → start a fresh conversation so old context doesn't bleed into new tasks. */

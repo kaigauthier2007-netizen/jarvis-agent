@@ -4,6 +4,7 @@ import type { Settings, UpdateState } from '@shared/types'
 import { api, IPC } from '../api'
 import { useApp, useT } from '../store'
 import { ProviderPanel, openUrl } from '../components/ProviderPanel'
+import { budgetView, describeBudget } from '../../../shared/paid'
 import { ConnectorsPanel } from '../components/ConnectorsPanel'
 
 type Tab = 'general' | 'agent' | 'connectors' | 'listening' | 'voice' | 'models' | 'about'
@@ -259,6 +260,27 @@ export function SettingsPage() {
                     </select>
                   </Row>
                 </Group>
+                <Group title={t('paid.title')} hint={t('paid.intro')}>
+                  <Row label={t('paid.enabled')}>
+                    <Switch on={s.paidEnabled} onChange={(v) => patch({ paidEnabled: v })} />
+                  </Row>
+                  <Row label={t('paid.budget')} hint={t('paid.budgetHint')}>
+                    <input className="input" type="number" min={0} step={0.5} style={{ width: 90 }} defaultValue={s.paidBudgetCad} onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== s.paidBudgetCad) patch({ paidBudgetCad: v }) }} />
+                  </Row>
+                  {(() => {
+                    const v = budgetView(s.paidUsage, s.paidBudgetCad, s.cadPerUsd || 1.4257)
+                    return (
+                      <Row label={t('paid.usage')} hint={describeBudget(v) + (v.requests ? ` ≈ $${v.perRequestCad.toFixed(4)} CAD per step, $${v.perDayCad.toFixed(2)} per day.` : '')} col>
+                        <div style={{ height: 8, borderRadius: 4, background: 'var(--line, rgba(127,127,127,.25))', overflow: 'hidden' }}>
+                          <div style={{ width: `${v.pct}%`, height: '100%', background: v.pct >= 80 ? '#e5484d' : 'var(--accent, #4c8dff)', transition: 'width .3s' }} />
+                        </div>
+                      </Row>
+                    )
+                  })()}
+                  <Row label={t('paid.key')} hint={t('paid.keyHint')}>
+                    <button className="btn" onClick={() => openUrl('https://console.groq.com/keys')}>console.groq.com</button>
+                  </Row>
+                </Group>
                 <Group title={t('sg.behavior')}>
                   <Row label={t('settings.permissions')} col>
                     <Seg
@@ -306,6 +328,20 @@ export function SettingsPage() {
                   </Row>
                   <Row label={t('school.canvasFeed')} hint={t('school.canvasFeedHint')} col>
                     <input className="input" placeholder="https://canvas.ubc.ca/feeds/calendars/user_….ics" defaultValue={s.canvasFeed} onBlur={(e) => e.target.value.trim() !== s.canvasFeed && patch({ canvasFeed: e.target.value.trim() })} />
+                  </Row>
+                </Group>
+                <Group title={t('web.title')} hint={t('web.intro')}>
+                  <Row label={t('web.enabled')}>
+                    <Switch on={s.browserControl} onChange={(v) => patch({ browserControl: v })} />
+                  </Row>
+                  <Row label={t('web.channel')}>
+                    <Seg value={s.browserChannel} options={[['chrome', 'Chrome'], ['msedge', 'Edge']]} onChange={(v) => patch({ browserChannel: v })} />
+                  </Row>
+                  <Row label={t('web.extension')} hint={t('web.extensionHint')}>
+                    <button className="btn" onClick={() => openUrl('https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm')}>{t('web.get')}</button>
+                  </Row>
+                  <Row label={t('web.token')} hint={t('web.tokenHint')} col>
+                    <input className="input" type="password" placeholder="PLAYWRIGHT_MCP_EXTENSION_TOKEN" defaultValue={s.browserToken} onBlur={(e) => e.target.value.trim() !== s.browserToken && patch({ browserToken: e.target.value.trim() })} />
                   </Row>
                 </Group>
                 <Group>

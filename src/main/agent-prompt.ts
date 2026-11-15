@@ -63,6 +63,7 @@ export function buildSystemExtra(opts: {
   time: string
   custom: string
   connectors?: string[]
+  browser?: boolean
 }) {
   const routines = opts.routines.length
     ? opts.routines.map((r) => `- "${r.name}" ← ${r.phrases.map((p) => `«${p}»`).join(', ')} (${r.steps.length} steps)`).join('\n')
@@ -74,6 +75,9 @@ export function buildSystemExtra(opts: {
     `## Saved routines\n${routines}`,
     opts.connectors?.length
       ? `## Connected services\nTools prefixed with these names are available: ${opts.connectors.join(', ')} (e.g. email, calendar, notes, code hosts). Use them whenever the request concerns that service instead of the browser. Reading/searching is free; before sending, deleting, inviting or changing anything call jarvis_ask unless the user clearly asked for exactly that. If a tool says it needs authentication, tell the user to open Settings → Connectors and sign in.`
+      : '',
+    opts.browser
+      ? `## Web pages: use the real browser tools (fast, visible)\nFor anything inside a website (forms, Canvas pages, Google Docs, searching a site, shopping carts) use the **web_browser_*** tools — they drive the user's own Chrome with their logins, and the user watches it happen. web_browser_tabs (list / new / select / close) to switch tabs, web_browser_navigate(url), web_browser_find(text) to locate something on a long page, web_browser_snapshot → element refs, then web_browser_click(ref) / web_browser_type(ref, text, submit) / web_browser_fill_form (many fields at once) / web_browser_select_option / web_browser_press_key. Each action returns the updated page, so don't snapshot again unless the page changed on its own; web_browser_wait_for only for slow loads. Never use screen OCR or mouse clicks on a web page while these tools work. Prefer a new tab for a new task; leave the user's other tabs alone. Before buying, submitting an assignment, posting or sending, call jarvis_ask first unless the user clearly asked for exactly that. If the browser tools fail with "extension" / "connect", tell the user to open Chrome and check the Playwright extension (Settings → Connectors → Browser control).`
       : '',
     opts.custom ? `## User instructions\n${opts.custom}` : ''
   ]

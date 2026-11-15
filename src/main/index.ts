@@ -259,7 +259,7 @@ function applySettings(patch: Partial<Settings>) {
   if (patch.sttModel && patch.sttModel !== before.sttModel) assistant.speech.restart()
   else if ('wakePhrases' in patch || 'wakeSensitivity' in patch || 'wakeEnabled' in patch || 'sttLanguage' in patch || 'speechPatience' in patch) assistant.speech.updateConfig()
   if (patch.apiKey !== undefined && patch.apiKey !== before.apiKey) void assistant.opencode.applyAuth().then(() => assistant.opencode.listModels(true))
-  if ((patch.permissionMode && patch.permissionMode !== before.permissionMode) || (patch.cwd !== undefined && patch.cwd !== before.cwd) || (patch.customProvider && JSON.stringify(patch.customProvider) !== JSON.stringify(before.customProvider)) || (patch.connectors && JSON.stringify(patch.connectors) !== JSON.stringify(before.connectors)))
+  if ((patch.permissionMode && patch.permissionMode !== before.permissionMode) || (patch.cwd !== undefined && patch.cwd !== before.cwd) || (patch.customProvider && JSON.stringify(patch.customProvider) !== JSON.stringify(before.customProvider)) || (patch.connectors && JSON.stringify(patch.connectors) !== JSON.stringify(before.connectors)) || (patch.browserControl !== undefined && patch.browserControl !== before.browserControl) || (patch.browserChannel !== undefined && patch.browserChannel !== before.browserChannel) || (patch.browserToken !== undefined && patch.browserToken !== before.browserToken))
     void assistant.opencode.restart()
   if (patch.autoUpdate) updater.setMode(patch.autoUpdate)
   if (patch.hotkey !== undefined) registerHotkey()

@@ -128,6 +128,15 @@ export class Opencode extends EventEmitter {
     return out
   }
 
+  /** the user's real Chrome / Edge, driven through the Playwright extension (visible, uses their logins) */
+  private browserEntry(): Record<string, unknown> {
+    const s = this.getSettings()
+    if (!s.browserControl) return {}
+    const args = ['-y', '@playwright/mcp@0.0.85', '--extension', `--browser=${s.browserChannel === 'msedge' ? 'msedge' : 'chrome'}`, '--image-responses=omit', '--timeout-settle=300', '--no-webmcp']
+    const command = process.platform === 'win32' ? ['cmd', '/c', 'npx', ...args] : ['npx', ...args]
+    return { web: { type: 'local', command, environment: s.browserToken ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: s.browserToken.trim() } : {}, enabled: true, timeout: 90000 } }
+  }
+
   private cfgJson() {
     const s = this.getSettings()
     return {
@@ -140,7 +149,12 @@ export class Opencode extends EventEmitter {
       formatter: false,
       share: 'disabled',
       snapshot: false,
-      permission: permissionConfig(s.permissionMode, this.activeConnectors().map((c) => c.id)),
+      permission: (() => {
+        const pc: any = permissionConfig(s.permissionMode, this.activeConnectors().map((c) => c.id))
+        // browser steps are as safe as Jarvis' own clicks; the prompt makes it confirm purchases / sending
+        if (s.browserControl && typeof pc === 'object') pc['web_*'] = s.permissionMode === 'ask' ? 'ask' : 'allow'
+        return pc
+      })(),
       // user-defined OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, any gateway…)
       ...(s.customProvider.enabled && s.customProvider.baseURL
         ? {
@@ -174,7 +188,7 @@ export class Opencode extends EventEmitter {
           mode: 'primary',
           prompt: JARVIS_PROMPT,
           // fewer tool schemas = shorter prompt = faster first token; Jarvis has its own questions/planning
-          tools: { question: false, task: false, todowrite: false, todoread: false, patch: false },
+          tools: { question: false, task: false, todowrite: false, todoread: false, patch: false, web_browser_resize: false, web_browser_console_messages: false, web_browser_network_requests: false, web_browser_network_request: false, web_browser_run_code_unsafe: false, web_browser_emulate_media: false, web_browser_drop: false },
           steps: 60
         }
       },
@@ -187,6 +201,7 @@ export class Opencode extends EventEmitter {
           oauth: false,
           timeout: 240000
         },
+        ...this.browserEntry(),
         ...this.connectorEntries()
       }
     }
@@ -446,6 +461,7 @@ export class Opencode extends EventEmitter {
       case 'message.updated': {
         const info = p.info
         if (info?.id) this.roles.set(info.id, info.role)
+        if (info?.role === 'assistant' && info.providerID && info.tokens) this.emit('usage', { id: info.id, model: `${info.providerID}/${info.modelID}`, tokens: info.tokens, cost: Number(info.cost) || 0 })
         if (info?.role === 'assistant' && info.error && info.error.name !== 'MessageAbortedError') {
           this.emit('error', this.errorText(info.error))
         }
