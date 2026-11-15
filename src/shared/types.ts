@@ -29,6 +29,8 @@ export interface Settings {
   followupSeconds: number
   /** talking while Jarvis speaks interrupts him */
   bargeIn: boolean
+  /** how long Jarvis waits through pauses before treating the request as finished */
+  speechPatience: 'quick' | 'normal' | 'relaxed'
   autoNewThreadMinutes: number
   /** unload the agent server after this many idle minutes (0 = keep it running) */
   agentIdleMinutes: number
@@ -93,6 +95,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cwd: '',
   followupSeconds: 12,
   bargeIn: true,
+  speechPatience: 'relaxed',
   autoNewThreadMinutes: 45,
   agentIdleMinutes: 10,
   freeBlocked: {},

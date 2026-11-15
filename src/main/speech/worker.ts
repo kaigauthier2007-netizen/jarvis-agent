@@ -19,6 +19,7 @@ interface InitMsg {
   wakeDir: string
   aliases: string[]
   wakeEnabled: boolean
+  patience?: 'quick' | 'normal' | 'relaxed'
 }
 
 const SR = 16000
@@ -31,6 +32,11 @@ let vad: any = null
 let wakeRec: any = null
 let aliases: string[] = []
 let wakeEnabled = true
+/** how long to wait through a pause before deciding the user is done: quick / normal / relaxed */
+let patience: 'quick' | 'normal' | 'relaxed' = 'normal'
+// the last word heard is a filler or a word that can't end a sentence ("um", "and", "the"…) → the user is still thinking.
+// The live recogniser is a small Russian model, so English words may come out in Cyrillic: both spellings are listed.
+const TRAILING = /(^|\s)(u+m+|u+h+|e+r+m*|h+m+|m{2,}|a+h+|so|and|but|or|like|the|a|an|to|of|for|with|in|on|my|your|is|are|that|then|because|if|which|what|when|maybe|i|you|we|can|could|would|please|э+|э+м+|а+м+|м{2,}|ну|и|а|но|или|что|как|чтобы|потому|ам|эн|зе|ту|ов|фо|виз|май|ай)$/i
 
 let mode: Mode = 'wake'
 let modeTimer: NodeJS.Timeout | null = null
@@ -48,6 +54,9 @@ let ignoreUntil = 0
 let peak = 0
 let quietRun = 0
 let speechChunks = 0
+// chunks since the VAD last heard a voice (silence as the VAD sees it, robust to background noise)
+let vadQuiet = 0
+let skippedSeg = false
 const CHUNK_MS = (512 / SR) * 1000
 
 const send = (m: any, transfer?: any[]) => parentPort!.postMessage(m, transfer as any)
@@ -75,6 +84,7 @@ function init(m: InitMsg) {
   try {
     aliases = m.aliases
     wakeEnabled = m.wakeEnabled
+    if (m.patience) patience = m.patience
     vad = new sherpa.Vad(
       {
         sileroVad: { model: m.vad, threshold: 0.45, minSilenceDuration: 0.5, minSpeechDuration: 0.2, windowSize: 512, maxSpeechDuration: 75 },
@@ -130,6 +140,8 @@ function startUtterance() {
   peak = 0
   quietRun = 0
   speechChunks = 0
+  vadQuiet = 0
+  skippedSeg = false
   wakeHit = false
   lastPartial = ''
   utt = [...ring]
@@ -181,6 +193,14 @@ function forceEnd(reason = 'energy') {
   } catch {}
 }
 
+/** Silence needed before an utterance counts as finished. Longer requests and a trailing filler word get more room. */
+function pauseMs(uttMs: number) {
+  const [base, perMs, cap] = patience === 'quick' ? [520, 0.06, 1300] : patience === 'relaxed' ? [1300, 0.1, 2800] : [850, 0.08, 1900]
+  let ms = mode === 'command' ? Math.min(cap, base + uttMs * perMs) : Math.min(cap * 0.7, base * 0.8 + uttMs * 0.05)
+  if (TRAILING.test(lastPartial.trim())) ms = Math.min(ms + 1100, 3800)
+  return ms
+}
+
 function rms(x: Float32Array) {
   let s = 0
   for (let i = 0; i < x.length; i++) s += x[i] * x[i]
@@ -215,13 +235,14 @@ function onAudio(samples: Float32Array) {
       speechChunks++
       const quiet = peak > 0.02 && e < Math.max(0.006, peak * 0.2)
       quietRun = quiet ? quietRun + 1 : 0
+      vadQuiet = detected ? 0 : vadQuiet + 1
       // Adaptive patience: a short command ends quickly (low latency), while someone dictating a long request is given room
       // to breathe between clauses. The wake word / short phrases end sooner than free speech.
       const uttMs = speechChunks * CHUNK_MS
-      const endMs = mode === 'command' ? Math.min(1300, 520 + uttMs * 0.06) : Math.min(900, 650 + uttMs * 0.05)
+      const endMs = pauseMs(uttMs)
       const longEnough = uttMs > 600
       const cap = mode === 'command' ? 70_000 : 12_000
-      if ((quietRun * CHUNK_MS >= endMs && longEnough) || uttLen > (cap / 1000) * SR) {
+      if (((quietRun * CHUNK_MS >= endMs || (skippedSeg && vadQuiet * CHUNK_MS >= endMs)) && longEnough) || uttLen > (cap / 1000) * SR) {
         forceEnd()
         continue
       }
@@ -229,7 +250,15 @@ function onAudio(samples: Float32Array) {
     while (!vad.isEmpty()) {
       const seg = vad.front(false)
       vad.pop()
-      if (inSpeech) endUtterance(seg.samples)
+      if (!inSpeech) continue
+      // the VAD closes a segment after ~0.5 s of silence; someone pausing to think hasn't finished yet
+      const wait = pauseMs(speechChunks * CHUNK_MS)
+      if (quietRun * CHUNK_MS < wait && vadQuiet * CHUNK_MS < wait && uttLen < MAX_UTTERANCE) {
+        skippedSeg = true
+        continue
+      }
+      // after skipped pauses the last VAD segment is only the tail: send the whole utterance
+      endUtterance(skippedSeg ? undefined : seg.samples)
     }
   }
 }
@@ -248,6 +277,7 @@ parentPort!.on('message', (m: any) => {
     case 'config':
       if (m.aliases) aliases = m.aliases
       if (typeof m.wakeEnabled === 'boolean') wakeEnabled = m.wakeEnabled
+      if (m.patience) patience = m.patience
       break
     case 'speaking':
       if (!m.on) ignoreUntil = Date.now() + 250

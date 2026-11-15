@@ -324,6 +324,17 @@ export function SettingsPage() {
                   <Row label={t('settings.listenWindow')} hint={t('settings.listenWindowHint')}>
                     <Slider value={s.followupSeconds} min={3} max={20} step={1} onChange={(v) => patch({ followupSeconds: v })} />
                   </Row>
+                  <Row label={t('settings.patience')} hint={t('settings.patienceHint')}>
+                    <Seg
+                      value={s.speechPatience}
+                      options={[
+                        ['quick', t('settings.patience.quick')],
+                        ['normal', t('settings.patience.normal')],
+                        ['relaxed', t('settings.patience.relaxed')]
+                      ]}
+                      onChange={(v) => patch({ speechPatience: v })}
+                    />
+                  </Row>
                   <Row label={t('settings.bargeIn')} hint={t('settings.bargeInHint')}>
                     <Switch on={s.bargeIn} onChange={(v) => patch({ bargeIn: v })} />
                   </Row>

@@ -94,7 +94,7 @@ export class SpeechEngine extends EventEmitter {
       this.worker = null
       this.ready = false
     })
-    w.postMessage({ type: 'init', vad: p.vad, wakeDir: p.wakeDir, aliases: this.aliases(), wakeEnabled: s.wakeEnabled })
+    w.postMessage({ type: 'init', vad: p.vad, wakeDir: p.wakeDir, aliases: this.aliases(), wakeEnabled: s.wakeEnabled, patience: s.speechPatience })
     return true
   }
 
@@ -245,7 +245,7 @@ export class SpeechEngine extends EventEmitter {
 
   updateConfig() {
     const s = this.getSettings()
-    this.worker?.postMessage({ type: 'config', aliases: this.aliases(), wakeEnabled: s.wakeEnabled })
+    this.worker?.postMessage({ type: 'config', aliases: this.aliases(), wakeEnabled: s.wakeEnabled, patience: s.speechPatience })
     this.killChild() // language / model choice changed: the next utterance starts a fresh child with the new settings
   }
 
