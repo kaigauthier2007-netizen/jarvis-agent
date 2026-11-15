@@ -293,9 +293,25 @@ export function SettingsPage() {
             )}
 
             {tab === 'connectors' && (
-              <Group>
-                <ConnectorsPanel />
-              </Group>
+              <>
+                <Group title={t('sg.school')} hint={t('school.intro')}>
+                  <Row label={t('school.calendar')} hint={t('school.calendarHint')} col>
+                    <textarea className="textarea" rows={2} placeholder="https://calendar.google.com/calendar/ical/…/private-…/basic.ics" defaultValue={s.calendarIcs} onBlur={(e) => e.target.value.trim() !== s.calendarIcs && patch({ calendarIcs: e.target.value.trim() })} />
+                  </Row>
+                  <Row label={t('school.canvasUrl')}>
+                    <input className="input" placeholder="https://canvas.ubc.ca" defaultValue={s.canvasUrl} onBlur={(e) => e.target.value.trim() !== s.canvasUrl && patch({ canvasUrl: e.target.value.trim() })} />
+                  </Row>
+                  <Row label={t('school.canvasToken')} hint={t('school.canvasTokenHint')} col>
+                    <input className="input" type="password" placeholder="1234~…" defaultValue={s.canvasToken} onBlur={(e) => e.target.value.trim() !== s.canvasToken && patch({ canvasToken: e.target.value.trim() })} />
+                  </Row>
+                  <Row label={t('school.canvasFeed')} hint={t('school.canvasFeedHint')} col>
+                    <input className="input" placeholder="https://canvas.ubc.ca/feeds/calendars/user_….ics" defaultValue={s.canvasFeed} onBlur={(e) => e.target.value.trim() !== s.canvasFeed && patch({ canvasFeed: e.target.value.trim() })} />
+                  </Row>
+                </Group>
+                <Group>
+                  <ConnectorsPanel />
+                </Group>
+              </>
             )}
 
             {tab === 'listening' && (

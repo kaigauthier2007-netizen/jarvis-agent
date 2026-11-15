@@ -17,6 +17,7 @@ import { Overlay } from './overlay'
 import { XttsSidecar } from './xtts'
 import { buildSystemExtra } from './agent-prompt'
 import { matchFast } from './fast-commands'
+import { School, matchSchool } from './school'
 import { pathsFor } from './models'
 
 let idSeq = 0
@@ -92,6 +93,7 @@ export class Assistant extends EventEmitter implements Hub {
   private askQueue: Promise<string> = Promise.resolve('')
   private askQuestion = ''
   private ackPreparing = false
+  readonly school: School
 
   constructor() {
     super()
@@ -108,6 +110,7 @@ export class Assistant extends EventEmitter implements Hub {
       this.emitStatus()
       if (st === 'ready') void this.prepareAcks()
     })
+    this.school = new School(() => this.settings())
     this.mcp = new JarvisMcp(this)
   }
 
@@ -214,6 +217,7 @@ export class Assistant extends EventEmitter implements Hub {
     this.speech.start()
     void this.opencode.start()
     this.prewarmVoices()
+    this.school.startWarm()
     this.emitStatus()
   }
 
@@ -525,6 +529,20 @@ export class Assistant extends EventEmitter implements Hub {
         return
       } catch (e: any) {
         console.warn('[fast] failed, falling back to the agent:', e?.message || e)
+      }
+    }
+
+    // calendar / Canvas questions: answered straight from the data (prefetched), no model round-trip
+    const sq = matchSchool(text)
+    if (sq && (sq.kind === 'calendar' ? this.school.hasCalendar : sq.kind === 'due' ? this.school.hasCanvas : this.school.hasCanvasApi)) {
+      try {
+        const answer = await this.school.answer(sq)
+        this.emit('chat', { id: uid(), kind: 'assistant', text: answer, at: Date.now(), done: true } satisfies ChatItem)
+        this.lastAssistantText = answer
+        if (via === 'voice') void this.say(answer)
+        return
+      } catch (e: any) {
+        console.warn('[school] instant answer failed, falling back to the agent:', e?.message || e)
       }
     }
 
@@ -1101,6 +1119,11 @@ export class Assistant extends EventEmitter implements Hub {
       wait_for: q('Жду появления', 'Waiting for', i.text ? `«${clip(i.text, 30)}»` : i.window ? `«${clip(i.window, 30)}»` : ''),
       open_app: q('Запускаю', 'Launching', clip(i.name || i.app, 30)),
       open_url: q('Открываю сайт', 'Opening', host(i.url)),
+      calendar_events: ['Проверяю календарь', 'Checking your calendar'],
+      calendar_add: q('Добавляю в календарь', 'Adding to your calendar', clip(i.title || '', 30)),
+      school_due: ['Проверяю задания в Canvas', 'Checking Canvas due dates'],
+      canvas_announcements: ['Читаю объявления Canvas', 'Reading Canvas announcements'],
+      canvas_grades: ['Смотрю оценки', 'Checking your grades'],
       compose_email: q('Готовлю письмо', 'Drafting an email to', clip(i.to || '', 30)),
       highlight: ['Показываю на экране', 'Pointing it out'],
       clipboard_get: ['Читаю буфер обмена', 'Reading the clipboard'],

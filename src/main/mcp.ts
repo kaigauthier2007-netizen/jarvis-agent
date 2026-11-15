@@ -9,6 +9,7 @@ import type { HighlightTarget, Routine, RoutineStep, Settings } from '../shared/
 import type { MemoryStore, RoutineStore } from './store'
 import type { WinBridge, WinWindow } from './win'
 import { Computer } from './computer'
+import { School, calendarTemplateUrl, describeDue, describeEvents, rangeOf } from './school'
 
 export interface Hub {
   settings(): Settings
@@ -25,6 +26,7 @@ export interface Hub {
   isVision(): boolean
   askVision(jpeg: Buffer, question: string): Promise<string>
   confirmControl(what: string): Promise<boolean>
+  school: School
 }
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
@@ -1389,6 +1391,114 @@ export class JarvisMcp {
         try {
           await h.win.call('launch', { name: url, wait: 2500 }, 20000)
           return this.result(`draft opened in the mail app (to: ${a.to || '—'}, subject: "${a.subject}") — not sent`, true, 1200)
+        } catch (e: any) {
+          return err(String(e?.message || e))
+        }
+      }
+    )
+
+    // ---- school: Canvas + Google Calendar straight from their data (no browser, no clicking)
+    const when = (a: { range?: string; from?: string; to?: string }, fallbackDays: number) => {
+      if (a.from) {
+        const f = new Date(a.from.length <= 10 ? a.from + 'T00:00' : a.from)
+        const t = a.to ? new Date(a.to.length <= 10 ? a.to + 'T23:59' : a.to) : new Date(f.getTime() + 86_400_000)
+        return { from: f, to: t, label: `from ${f.toDateString()} to ${t.toDateString()}` }
+      }
+      return rangeOf((a.range || '').toLowerCase(), new Date(), fallbackDays)
+    }
+    const rangeArgs = {
+      range: z.string().optional().describe('plain words: "today", "tomorrow", "this week", "next week", "friday", "this weekend", "next 3 days"'),
+      from: z.string().optional().describe('or exact start, ISO date/time (YYYY-MM-DD or YYYY-MM-DDTHH:MM, local time)'),
+      to: z.string().optional().describe('exact end, ISO')
+    }
+
+    s.registerTool(
+      'calendar_events',
+      {
+        description: "ONE call to read the user's Google Calendar (events with times/places) for a day or range. Use it for any \"what's on my calendar / am I free / when is …\" question instead of opening the calendar website.",
+        inputSchema: rangeArgs
+      },
+      async (a) => {
+        try {
+          const r = when(a, 1)
+          const evs = await this.hub.school.events(r.from, r.to)
+          const lines = evs.map((e) => `- ${e.start.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}${e.allDay ? ' (all day)' : ' – ' + e.end.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}: ${e.title}${e.location ? ' @ ' + e.location : ''}`)
+          return text(`${describeEvents(evs, r.label)}\n${lines.join('\n')}`.trim())
+        } catch (e: any) {
+          return err(String(e?.message || e))
+        }
+      }
+    )
+
+    s.registerTool(
+      'calendar_add',
+      {
+        description: 'ONE call to add an event to Google Calendar: opens the pre-filled "new event" page in the browser; the user just presses Save. Use instead of clicking through the calendar website.',
+        inputSchema: {
+          title: z.string(),
+          start: z.string().describe('local start, ISO: YYYY-MM-DDTHH:MM (or YYYY-MM-DD for all day)'),
+          end: z.string().optional().describe('local end, ISO (default: 1 hour after start)'),
+          all_day: z.boolean().optional(),
+          location: z.string().optional(),
+          details: z.string().optional()
+        }
+      },
+      async (a) => {
+        const g = await this.consent()
+        if (g) return g
+        try {
+          const url = calendarTemplateUrl({ title: a.title, start: a.start, end: a.end, allDay: a.all_day, location: a.location, details: a.details })
+          await h.win.call('launch', { name: url, wait: 1500 }, 15000)
+          this.hub.school.invalidate()
+          return text(`opened the pre-filled Google Calendar event "${a.title}" — the user only needs to press Save`)
+        } catch (e: any) {
+          return err(String(e?.message || e))
+        }
+      }
+    )
+
+    s.registerTool(
+      'school_due',
+      {
+        description: 'ONE call to list Canvas assignments / quizzes / discussions due in a range, with course and whether each is already submitted. Default: the next 7 days. Use instead of opening Canvas in the browser.',
+        inputSchema: rangeArgs
+      },
+      async (a) => {
+        try {
+          const r = when(a, 7)
+          const items = await this.hub.school.due(r.from, r.to)
+          const lines = items.map((i) => `- ${i.due.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${i.course} · ${i.title} · ${i.done ? 'submitted' : i.missing ? 'MISSING' : 'not submitted'}${i.url ? ' · ' + i.url : ''}`)
+          return text(`${describeDue(items, r.label)}\n${lines.join('\n')}`.trim())
+        } catch (e: any) {
+          return err(String(e?.message || e))
+        }
+      }
+    )
+
+    s.registerTool(
+      'canvas_announcements',
+      {
+        description: 'Recent Canvas announcements from all current courses (title, course, date, text). ONE call instead of browsing Canvas.',
+        inputSchema: { days: z.number().optional().describe('how far back (default 7)') }
+      },
+      async (a) => {
+        try {
+          const list = await this.hub.school.announcements(a.days ?? 7)
+          if (!list.length) return text('no announcements in that period')
+          return text(list.map((x) => `- ${x.posted.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · ${x.course} · ${x.title}\n  ${x.text}${x.url ? '\n  ' + x.url : ''}`).join('\n'))
+        } catch (e: any) {
+          return err(String(e?.message || e))
+        }
+      }
+    )
+
+    s.registerTool(
+      'canvas_grades',
+      { description: 'Current Canvas grade (percent) in each active course. ONE call.', inputSchema: {} },
+      async () => {
+        try {
+          const g = await this.hub.school.grades()
+          return text(g.map((x) => `- ${x.course}: ${x.score === null ? 'no grade yet' : x.score + '%'}${x.grade ? ' (' + x.grade + ')' : ''}`).join('\n') || 'no active courses')
         } catch (e: any) {
           return err(String(e?.message || e))
         }

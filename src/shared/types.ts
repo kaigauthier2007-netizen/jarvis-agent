@@ -66,6 +66,14 @@ export interface Settings {
   customSystemPrompt: string
   wakeSound: boolean
   setupDone: boolean
+  /** Canvas site, e.g. https://canvas.ubc.ca */
+  canvasUrl: string
+  /** Canvas personal access token (Account → Settings → New Access Token) */
+  canvasToken: string
+  /** optional: Canvas calendar feed (.ics) — due dates without a token */
+  canvasFeed: string
+  /** Google Calendar secret iCal address(es), one per line */
+  calendarIcs: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -122,7 +130,11 @@ export const DEFAULT_SETTINGS: Settings = {
   wakeAck: 'always',
   customSystemPrompt: '',
   wakeSound: true,
-  setupDone: false
+  setupDone: false,
+  canvasUrl: 'https://canvas.ubc.ca',
+  canvasToken: '',
+  canvasFeed: '',
+  calendarIcs: ''
 }
 
 export interface Thread {
