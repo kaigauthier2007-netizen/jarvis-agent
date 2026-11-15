@@ -49,6 +49,13 @@ export class SettingsStore extends JsonStore<Settings> {
       d.englishDefaults = true
       this.save()
     }
+    // one-time: longer conversation window (the old default of 7 s felt cut off)
+    const c = this.data as Settings & { convoDefaults?: boolean }
+    if (!c.convoDefaults) {
+      if (c.followupSeconds === 7) c.followupSeconds = 12
+      c.convoDefaults = true
+      this.save()
+    }
   }
   get(): Settings {
     return this.data

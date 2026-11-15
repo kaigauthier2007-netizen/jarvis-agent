@@ -276,6 +276,7 @@ export class Assistant extends EventEmitter implements Hub {
         break
       case 'partial':
         this.emit('partial', e.text)
+        this.maybeBargeIn(e.text)
         break
       case 'wake':
         void this.opencode.wake() // the agent may be unloaded while idle: start it while the user is still talking
@@ -443,6 +444,12 @@ export class Assistant extends EventEmitter implements Hub {
     text = text.trim()
     if (this.isAckEcho(text)) {
       // Jarvis heard his own "Yes, sir" through the speakers — not a command
+      this.speech.listenFor(this.settings().followupSeconds)
+      this.setState('listening')
+      return
+    }
+    if (!this.askResolve && this.currentLine && Date.now() - this.lastLineEndedAt < 4000 && this.echoOf(text, this.currentLine)) {
+      // Jarvis heard the end of his own answer through the speakers — keep listening for the user
       this.speech.listenFor(this.settings().followupSeconds)
       this.setState('listening')
       return
@@ -702,6 +709,16 @@ export class Assistant extends EventEmitter implements Hub {
       const first = splitSentences(gist)[0] ?? ''
       if (first && first.length <= 220) await this.say(first)
     }
+    // conversation mode: after answering a spoken request keep the mic open, so the user can reply without the wake word
+    if (this.lastWasVoice && this.settings().followupSeconds > 0) {
+      await this.sayChain
+      if (!this.opencode.isBusy && this.speakingDepth === 0 && !this.askResolve) {
+        this.commandListening = true
+        this.speech.listenFor(this.settings().followupSeconds)
+        this.setState('listening')
+        return
+      }
+    }
     if (this.speakingDepth === 0) this.setState('idle')
   }
 
@@ -728,6 +745,7 @@ export class Assistant extends EventEmitter implements Hub {
     const clean = speakable(text)
     if (!clean || !/[\p{L}\p{N}]/u.test(clean)) return
     this.lastSpeechAt = Date.now()
+    this.currentLine = clean
     this.emit('chat', { id: uid(), kind: 'say', text: clean, at: Date.now() } satisfies ChatItem)
     this.emit('subtitle', clean)
     if (highlights.length) void this.overlay.show(highlights)
@@ -745,7 +763,8 @@ export class Assistant extends EventEmitter implements Hub {
       if (!ok) {
         await new Promise((r) => setTimeout(r, Math.min(6000, 700 + clean.length * 55)))
       } else {
-        const sentences = splitSentences(clean)
+        // a long first sentence is split at its first comma/dash so the first audio starts sooner
+        const sentences = quickStart(splitSentences(clean))
         // a cloned voice that is still loading or failing must not leave Jarvis mute: fall back to Piper
         const synth = async (t: string) => {
           // cloned voice not loaded (it unloads when idle / is still starting): kick it off and answer with Piper now
@@ -784,6 +803,7 @@ export class Assistant extends EventEmitter implements Hub {
     } finally {
       this.speakingDepth = Math.max(0, this.speakingDepth - 1)
       this.lastSpeechAt = Date.now()
+      this.lastLineEndedAt = Date.now()
       if (this.speakingDepth === 0) {
         this.speech.speaking(false)
         if (highlights.length) setTimeout(() => this.overlay.clear(), 500)
@@ -876,6 +896,37 @@ export class Assistant extends EventEmitter implements Hub {
   }
 
   /** True when a transcript is just the microphone picking up Jarvis reading the question aloud. */
+  /** What Jarvis is saying right now / said last (to tell the user's voice apart from his own echo). */
+  private currentLine = ''
+  private lastLineEndedAt = 0
+
+  private echoOf(text: string, line: string): boolean {
+    const lt = new Set(normalize(line).split(' ').filter(Boolean))
+    const tt = normalize(text).split(' ').filter(Boolean)
+    if (!tt.length || !lt.size) return false
+    const hits = tt.filter((w) => lt.has(w) || [...lt].some((q) => q.length > 3 && w.length > 3 && phraseScore(w, q) > 0.8)).length
+    return hits / tt.length >= 0.55
+  }
+
+  /**
+   * Barge-in: the user starts talking while Jarvis is speaking → stop talking and listen. "Stop / wait" (or the wake word)
+   * always works; free speech interrupts the final answer, not the short progress lines of a task still running (so a
+   * stray word can't cancel the job). Jarvis' own voice coming back through the speakers is ignored.
+   */
+  private maybeBargeIn(partial: string) {
+    if (!this.settings().bargeIn || this.speakingDepth === 0 || this.askResolve) return
+    const t = normalize(partial)
+    const words = t.split(' ').filter(Boolean)
+    const stopWord = /\b(stop|wait|hold on|enough|quiet|shut up|never ?mind|стоп|хватит|подожди|замолчи)\b/.test(t)
+    if (!stopWord && words.length < 3) return
+    if (this.echoOf(partial, this.currentLine)) return
+    if (!stopWord && this.opencode.isBusy) return
+    this.stopSpeaking()
+    this.commandListening = true
+    this.speech.listenFor(this.settings().followupSeconds)
+    this.setState('listening')
+  }
+
   private isQuestionEcho(text: string): boolean {
     if (!this.askQuestion || this.speakingDepth === 0) return false
     const qt = new Set(normalize(this.askQuestion).split(' '))
@@ -1268,4 +1319,12 @@ function msUntilPacificMidnight(now = new Date()) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(now).map((p) => [p.type, p.value]))
   const sec = (Number(parts.hour) % 24) * 3600 + Number(parts.minute) * 60 + Number(parts.second)
   return (24 * 3600 - sec) * 1000
+}
+
+/** Split a long first sentence at a clause boundary (comma, dash, semicolon) so speech synthesis returns sooner. */
+function quickStart(sentences: string[]): string[] {
+  const first = sentences[0]
+  if (!first || first.length < 70) return sentences
+  const m = /^(.{20,60}?[,;:—–-])\s+(.{15,})$/s.exec(first)
+  return m ? [m[1], m[2], ...sentences.slice(1)] : sentences
 }

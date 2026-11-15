@@ -27,6 +27,8 @@ export interface Settings {
   hudCorner: 'br' | 'bl' | 'tr' | 'tl'
   cwd: string
   followupSeconds: number
+  /** talking while Jarvis speaks interrupts him */
+  bargeIn: boolean
   autoNewThreadMinutes: number
   /** unload the agent server after this many idle minutes (0 = keep it running) */
   agentIdleMinutes: number
@@ -89,7 +91,8 @@ export const DEFAULT_SETTINGS: Settings = {
   showSubtitles: true,
   hudCorner: 'br',
   cwd: '',
-  followupSeconds: 7,
+  followupSeconds: 12,
+  bargeIn: true,
   autoNewThreadMinutes: 45,
   agentIdleMinutes: 10,
   freeBlocked: {},

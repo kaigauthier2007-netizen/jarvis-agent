@@ -322,7 +322,10 @@ export function SettingsPage() {
                     />
                   </Row>
                   <Row label={t('settings.listenWindow')} hint={t('settings.listenWindowHint')}>
-                    <Slider value={s.followupSeconds} min={3} max={15} step={1} onChange={(v) => patch({ followupSeconds: v })} />
+                    <Slider value={s.followupSeconds} min={3} max={20} step={1} onChange={(v) => patch({ followupSeconds: v })} />
+                  </Row>
+                  <Row label={t('settings.bargeIn')} hint={t('settings.bargeInHint')}>
+                    <Switch on={s.bargeIn} onChange={(v) => patch({ bargeIn: v })} />
                   </Row>
                 </Group>
                 <Group title={t('sg.recognition')}>
