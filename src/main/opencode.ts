@@ -798,6 +798,10 @@ export class Opencode extends EventEmitter {
     this.providerCache = null
   }
 
+  modelName(modelId: string): string {
+    return this.modelCache.find((m) => m.id === modelId)?.name ?? modelId.replace(/^[^/]+\//, '')
+  }
+
   isVision(modelId: string) {
     return !!this.modelCache.find((m) => m.id === modelId)?.vision
   }

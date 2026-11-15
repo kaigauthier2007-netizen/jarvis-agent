@@ -77,6 +77,9 @@ export class Assistant extends EventEmitter implements Hub {
   private stepCount = 0
   private liveSteps: NonNullable<AppStatus['steps']> = []
   private turnStartedAt = 0
+  /** when the user's request was sent (survives continuations / model switches), for the "done in" readout */
+  private taskStartedAt = 0
+  private taskSteps = 0
   private lastItem: { kind: string; text?: string } = { kind: '' }
   private turnErrored = false
   private nudges = 0
@@ -211,6 +214,13 @@ export class Assistant extends EventEmitter implements Hub {
         return
       }
       this.setControl(false)
+      if (this.taskStartedAt) {
+        const secs = (Date.now() - this.taskStartedAt) / 1000
+        const m = this.settings().model
+        const name = this.opencode.modelName(m)
+        this.taskStartedAt = 0
+        if (!this.turnErrored) this.emit('chat', { id: uid(), kind: 'system', text: `⏱ ${secs < 10 ? secs.toFixed(1) : Math.round(secs)} s · ${this.taskSteps} step${this.taskSteps === 1 ? '' : 's'} · ${name}`, at: Date.now() } satisfies ChatItem)
+      }
       void this.onTurnEnd()
     })
     this.watchdog = setInterval(() => this.checkWatchdog(), 5000)
@@ -594,6 +604,8 @@ export class Assistant extends EventEmitter implements Hub {
       this.lastVia = via
       this.lastUserText = text
       this.freeSwitches = 0
+      this.taskStartedAt = Date.now()
+      this.taskSteps = 0
       await this.opencode.send(text, system, via)
       if (this.fallbackTest) {
         this.fallbackTest = false
@@ -1138,7 +1150,7 @@ export class Assistant extends EventEmitter implements Hub {
       this.emitStatus()
     }
     if (t.status === 'running' || t.status === 'pending') {
-      if (t.status === 'running' && !this.seenTools.has(t.id)) this.stepCount++
+      if (t.status === 'running' && !this.seenTools.has(t.id)) (this.stepCount++, this.taskSteps++)
       this.setActivity(this.toolLabel(name, t))
       if (t.status === 'running' && !this.seenTools.has(t.id)) {
         this.seenTools.add(t.id)
