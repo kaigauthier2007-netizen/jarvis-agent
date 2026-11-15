@@ -184,15 +184,19 @@ function runJob(m: Job) {
       if (!verified) {
         if (m.language === 'ru') return
         // run the (heavier) English recogniser only when something resembling the name was heard by either model
-        const maybeName = m.gateHit || looseWakeGate(m.partial, m.aliases) || (m.language !== 'ru' && looseWakeGate(gigaLatin, m.aliases))
-        if (!maybeName) return
-        emit({ type: 'busy', on: true })
+        // The streaming gate is a small Russian model and often mishears an English "Jarvis": with English speech give
+        // every short utterance (<= 6 s, where a wake word + command fits) a look with the English recogniser.
+        const short = m.language === 'en' && x.length <= SR * 6
+        const likely = m.gateHit || looseWakeGate(m.partial, m.aliases) || (m.language !== 'ru' && looseWakeGate(gigaLatin, m.aliases))
+        if (!likely && !short) return
+        if (likely) emit({ type: 'busy', on: true }) // don't flash "transcribing" for every random sound
         const w = whisperText(x)
         raw = w.text || m.partial
         lang = w.lang === 'ru' ? 'ru' : 'en'
-        const r = stripWake(raw, m.aliases, m.sensitivity, relaxed)
+        // English text is matched a bit more loosely (the aliases list covers the usual misspellings)
+        const r = stripWake(raw, m.aliases, m.sensitivity, relaxed - 0.05)
         if (!r.hit) {
-          emit({ type: 'wakeRejected', text: raw })
+          if (likely) emit({ type: 'wakeRejected', text: raw })
           return
         }
         command = r.command

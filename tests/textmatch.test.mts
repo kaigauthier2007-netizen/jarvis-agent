@@ -46,3 +46,19 @@ test('sentence splitting keeps short fragments together', () => {
   assert.equal(detectLang('Открой браузер'), 'ru')
   assert.equal(detectLang('Open the browser'), 'en')
 })
+
+const EN_ALIASES = ['jarvis', 'джарвис', 'джарви', 'джави', 'жарви', 'джарвиз', 'джервис', 'джарвес', 'jervis', 'javis', 'jarvus', 'jarvas', 'jarviss', 'jarvi', 'jarvys', 'charvis', 'garvis', 'jarbis', 'jarves']
+// the English path matches at the relaxed threshold minus 0.05 (sensitivity 0.6 → 0.75)
+const EN_T = 1.0 - 0.6 * 0.2 - 0.08 - 0.05
+
+test('wake word (English recogniser): accepts how it writes Jarvis', () => {
+  for (const t of ['Jarvis, what time is it', 'Hey Jarvis open Spotify', 'Jervis play music', 'Javis', 'Jarvus, open chrome', 'Charvis what is the weather', 'Okay Jarvis', 'Jarvis.']) {
+    assert.ok(stripWake(t, EN_ALIASES, 0.6, EN_T).hit, `should wake on: ${t}`)
+  }
+})
+
+test('wake word (English recogniser): ignores ordinary English speech', () => {
+  for (const t of ['open the door', 'what is the weather', 'Travis is coming over', 'I need a service', 'jars of jam', 'the car is red', 'harvest moon tonight', 'carpet cleaning', 'nervous about the test']) {
+    assert.equal(stripWake(t, EN_ALIASES, 0.6, EN_T).hit, null, `should NOT wake on: ${t}`)
+  }
+})

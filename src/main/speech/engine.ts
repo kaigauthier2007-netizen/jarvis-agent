@@ -70,7 +70,13 @@ export class SpeechEngine extends EventEmitter {
     const base = s.wakePhrases.map((x) => x.toLowerCase().trim()).filter(Boolean)
     // the recognisers write the default name many ways; accept the common ones without asking the user to list them
     const jarvis = ['джарвис', 'jarvis', 'жарвис'].some((a) => base.includes(a))
-    const extra = jarvis ? ['джарви', 'джави', 'жарви', 'джарвиз', 'джервис', 'джарвес'] : []
+    const extra = jarvis
+      ? [
+          'джарви', 'джави', 'жарви', 'джарвиз', 'джервис', 'джарвес',
+          // how English recognisers (Parakeet / Whisper) tend to write it
+          'jervis', 'javis', 'jarvus', 'jarvas', 'jarviss', 'jarvi', 'jarvys', 'charvis', 'garvis', 'jarbis', 'jarves'
+        ]
+      : []
     return Array.from(new Set([...base, ...extra]))
   }
 
