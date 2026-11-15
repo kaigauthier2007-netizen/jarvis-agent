@@ -28,20 +28,31 @@ class Capture extends AudioWorkletProcessor {
 registerProcessor('capture', Capture)
 `
 
+async function openStream(id: string) {
+  return navigator.mediaDevices.getUserMedia({
+    audio: {
+      deviceId: id === 'default' ? undefined : { exact: id },
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    }
+  })
+}
+
 async function startMic() {
   stopMic()
   const id = settings?.micDeviceId ?? 'default'
   currentMic = id
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId: id === 'default' ? undefined : { exact: id },
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    })
+    try {
+      micStream = await openStream(id)
+    } catch (e) {
+      // the chosen mic is gone (earbuds disconnected, USB mic unplugged): use the Windows default instead of going deaf
+      if (id === 'default') throw e
+      console.warn('chosen mic unavailable, using the default one', e)
+      micStream = await openStream('default')
+    }
     micCtx = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' })
     const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }))
     await micCtx.audioWorklet.addModule(url)
@@ -196,6 +207,12 @@ async function main() {
     } catch {}
   })
   api.on('audio:earcon', (k: string) => earcon(k))
+  // headphones connected / disconnected: reopen the mic so we follow the right device (and come back to the chosen one)
+  let devTimer: number | null = null
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    if (devTimer) clearTimeout(devTimer)
+    devTimer = window.setTimeout(() => void startMic(), 1500)
+  })
   await startMic()
 }
 
