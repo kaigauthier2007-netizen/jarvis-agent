@@ -22,7 +22,7 @@ test('pace estimate and cap', () => {
   const u = addUsage(freshUsage(undefined, start), 1, true, start) // $1 USD on the 10th
   const v = budgetView(u, 5, 1.4, now) // 1.40 CAD since midnight on the 10th (5.4 days) → 0.26/day → 13.8 days left → runs out Nov 29
   assert.equal(v.runsOut?.getDate(), 29)
-  assert.match(describeBudget(v), /\$1\.40 of your \$5\.00 CAD/)
+  assert.match(describeBudget(v), /\$1\.40 of your \$5\.00 CAD fast-model/)
   const slow = budgetView(addUsage(freshUsage(undefined, start), 0.1, true, start), 5, 1.4, now)
   assert.equal(slow.runsOut, null)
   assert.ok(budgetView(addUsage(u, 2.6, true, now), 5, 1.4, now).over)

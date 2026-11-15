@@ -1,7 +1,7 @@
 /**
- * Monthly budget for the paid fast model (Groq). Every finished model step reports its token counts; they are priced
+ * Monthly budget for the paid fast model (OpenRouter or Groq). Every finished model step reports its token counts; they are priced
  * here, added to this month's total, and once the total reaches the cap the paid model is blocked until the 1st of
- * next month (Jarvis falls back to the free models). The budget is in Canadian dollars; Groq bills in US dollars, so
+ * next month (Jarvis falls back to the free models). The budget is in Canadian dollars; providers bill in US dollars, so
  * the Bank of Canada daily rate is fetched once a day.
  */
 import type { PaidUsage } from './types'
@@ -14,12 +14,17 @@ export interface Tokens {
   cache?: { read?: number; write?: number }
 }
 
-/** USD per 1M tokens (Groq list prices, November 2026) */
+/** USD per 1M tokens (list prices, November 2026) */
 export const PRICES: Record<string, { input: number; cached: number; output: number }> = {
+  // OpenRouter "nitro" = fastest host; counted at Cerebras' price (the dearest fast host)
+  'openrouter/openai/gpt-oss-120b:nitro': { input: 0.35, cached: 0.35, output: 0.75 },
   'groq/openai/gpt-oss-120b': { input: 0.15, cached: 0.075, output: 0.6 },
   'groq/openai/gpt-oss-20b': { input: 0.075, cached: 0.037, output: 0.3 },
   'groq/qwen/qwen3.8-27b': { input: 0.8, cached: 0.8, output: 4 }
 }
+
+/** paid fast models Jarvis knows, best first (OpenRouter works today; Groq's paid plan is paused for new accounts) */
+export const PAID_MODELS = ['openrouter/openai/gpt-oss-120b:nitro', 'groq/openai/gpt-oss-120b']
 
 export function costUsd(model: string, t: Tokens, reported = 0): number {
   const p = PRICES[model]
@@ -85,7 +90,7 @@ export function budgetView(u: PaidUsage | undefined, budgetCad: number, cadPerUs
 
 export function describeBudget(v: BudgetView): string {
   const $ = (n: number) => '$' + n.toFixed(2)
-  const base = `You've used ${$(v.spentCad)} of your ${$(v.budgetCad)} CAD Groq budget this month (${Math.round(v.pct)}%, ${v.requests} request${v.requests === 1 ? '' : 's'}).`
+  const base = `You've used ${$(v.spentCad)} of your ${$(v.budgetCad)} CAD fast-model budget this month (${Math.round(v.pct)}%, ${v.requests} request${v.requests === 1 ? '' : 's'}).`
   if (v.over) return base + ' The cap is reached, so I am on the free models until the 1st.'
   if (!v.requests) return base
   if (v.runsOut) return base + ` At this pace it runs out around ${v.runsOut.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}.`

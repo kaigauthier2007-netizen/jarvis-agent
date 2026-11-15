@@ -278,7 +278,7 @@ export function SettingsPage() {
                     )
                   })()}
                   <Row label={t('paid.key')} hint={t('paid.keyHint')}>
-                    <button className="btn" onClick={() => openUrl('https://console.groq.com/keys')}>console.groq.com</button>
+                    <button className="btn" onClick={() => openUrl('https://openrouter.ai/keys')}>openrouter.ai</button>
                   </Row>
                 </Group>
                 <Group title={t('sg.behavior')}>

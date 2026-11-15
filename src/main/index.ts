@@ -259,7 +259,7 @@ function applySettings(patch: Partial<Settings>) {
   if (patch.sttModel && patch.sttModel !== before.sttModel) assistant.speech.restart()
   else if ('wakePhrases' in patch || 'wakeSensitivity' in patch || 'wakeEnabled' in patch || 'sttLanguage' in patch || 'speechPatience' in patch) assistant.speech.updateConfig()
   if (patch.apiKey !== undefined && patch.apiKey !== before.apiKey) void assistant.opencode.applyAuth().then(() => assistant.opencode.listModels(true))
-  if ((patch.permissionMode && patch.permissionMode !== before.permissionMode) || (patch.cwd !== undefined && patch.cwd !== before.cwd) || (patch.customProvider && JSON.stringify(patch.customProvider) !== JSON.stringify(before.customProvider)) || (patch.connectors && JSON.stringify(patch.connectors) !== JSON.stringify(before.connectors)) || (patch.browserControl !== undefined && patch.browserControl !== before.browserControl) || (patch.browserChannel !== undefined && patch.browserChannel !== before.browserChannel) || (patch.browserToken !== undefined && patch.browserToken !== before.browserToken))
+  if ((patch.permissionMode && patch.permissionMode !== before.permissionMode) || (patch.cwd !== undefined && patch.cwd !== before.cwd) || (patch.customProvider && JSON.stringify(patch.customProvider) !== JSON.stringify(before.customProvider)) || (patch.connectors && JSON.stringify(patch.connectors) !== JSON.stringify(before.connectors)) || (patch.openrouterKey !== undefined && patch.openrouterKey !== before.openrouterKey) || (patch.browserControl !== undefined && patch.browserControl !== before.browserControl) || (patch.browserChannel !== undefined && patch.browserChannel !== before.browserChannel) || (patch.browserToken !== undefined && patch.browserToken !== before.browserToken))
     void assistant.opencode.restart()
   if (patch.autoUpdate) updater.setMode(patch.autoUpdate)
   if (patch.hotkey !== undefined) registerHotkey()
@@ -351,10 +351,13 @@ function wireIpc() {
   })
   ipcMain.handle('providers:connect', async (_e, id: string, key: string) => {
     await assistant.opencode.connectProvider(id, key)
+    // the OpenRouter fast-model entry is only added to the engine config once a key exists (else it looks "connected")
+    if (id === 'openrouter' && !assistant.settings().openrouterKey) applySettings({ openrouterKey: true })
     return true
   })
   ipcMain.handle('providers:disconnect', async (_e, id: string) => {
     await assistant.opencode.disconnectProvider(id)
+    if (id === 'openrouter' && assistant.settings().openrouterKey) applySettings({ openrouterKey: false })
     return true
   })
   ipcMain.handle('app:info', () => {

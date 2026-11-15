@@ -18,7 +18,7 @@ import { XttsSidecar } from './xtts'
 import { buildSystemExtra } from './agent-prompt'
 import { matchFast } from './fast-commands'
 import { School, matchSchool } from './school'
-import { addUsage, budgetView, costUsd, describeBudget, fetchCadPerUsd, freshUsage } from '../shared/paid'
+import { PAID_MODELS, PRICES, addUsage, budgetView, costUsd, describeBudget, fetchCadPerUsd, freshUsage } from '../shared/paid'
 import { pathsFor } from './models'
 
 let idSeq = 0
@@ -536,8 +536,8 @@ export class Assistant extends EventEmitter implements Hub {
       }
     }
 
-    // "how much Groq budget is left?" — answered from the local usage counter
-    if ((/\b(groq|budget)\b/i.test(text) || /\b(ai|model|paid|jarvis|my)\s+(usage|credits?|spend|spending)\b/i.test(text)) && /\b(how much|left|remaining|used|check|status|usage|running out|pace)\b/i.test(text) && text.length < 90 && !/\b(email|send|write|make|create)\b/i.test(text)) {
+    // "how much budget is left?" — answered from the local usage counter
+    if ((/\b(groq|openrouter|open router|budget)\b/i.test(text) || /\b(ai|model|paid|jarvis|my)\s+(usage|credits?|spend|spending)\b/i.test(text)) && /\b(how much|left|remaining|used|check|status|usage|running out|pace)\b/i.test(text) && text.length < 90 && !/\b(email|send|write|make|create)\b/i.test(text)) {
       const answer = this.budgetText()
       this.emit('chat', { id: uid(), kind: 'assistant', text: answer, at: Date.now(), done: true } satisfies ChatItem)
       this.lastAssistantText = answer
@@ -624,7 +624,8 @@ export class Assistant extends EventEmitter implements Hub {
       return i < 0 ? 99 : i
     }
     const free = models.filter((m) => m.provider === 'opencode' && m.free && !/-vl-/.test(m.id)).map((m) => m.id).sort((a, b) => rank(a) - rank(b))
-    const paid = this.paidAllowed() && known.has(s.paidModel) ? [s.paidModel] : []
+    const paidId = await this.paidModelId(models)
+    const paid = paidId && this.paidAllowed() ? [paidId] : []
     const rest = (s.fallbackModels ?? []).filter((id) => known.has(id) && !free.includes(id) && !paid.includes(id))
     return { order: [...paid, ...free, ...rest], models }
   }
@@ -640,9 +641,9 @@ export class Assistant extends EventEmitter implements Hub {
     const now = Date.now()
     const blocked = { ...(s.freeBlocked ?? {}) }
     // hit the limit again within 3 h of an earlier block → it's the daily quota, whatever the short retry hint says
-    const repeat = !test && cur !== s.paidModel && (blocked[cur] ?? 0) > now - 3 * 3_600_000
+    const repeat = !test && !this.isPaid(cur) && (blocked[cur] ?? 0) > now - 3 * 3_600_000
     for (const [k, until] of Object.entries(blocked)) if (until < now) delete blocked[k]
-    blocked[cur] = now + (waitMs > 0 ? waitMs + 5_000 : cur === s.paidModel ? 60_000 : 30 * 60_000)
+    blocked[cur] = now + (waitMs > 0 ? waitMs + 5_000 : this.isPaid(cur) ? 60_000 : 30 * 60_000)
     if (repeat) blocked[cur] = Math.max(blocked[cur], now + msUntilPacificMidnight())
     this.settingsStore.set({ freeBlocked: blocked })
     const { order, models } = await this.modelOrder()
@@ -668,7 +669,7 @@ export class Assistant extends EventEmitter implements Hub {
     if (!s.fallbackEnabled) return
     const { order, models } = await this.modelOrder(false)
     const now = Date.now()
-    const curOut = s.model === s.paidModel && !this.paidAllowed()
+    const curOut = this.isPaid(s.model) && !this.paidAllowed()
     if (!order.includes(s.model) && !curOut) return // the user picked something outside the order on purpose
     const best = order.find((id) => !((s.freeBlocked ?? {})[id] > now))
     const curBlocked = curOut || (s.freeBlocked ?? {})[s.model] > now
@@ -679,23 +680,39 @@ export class Assistant extends EventEmitter implements Hub {
     this.emit('chat', { id: uid(), kind: 'system', text: ru ? `↺ «${name}» снова доступна — возвращаюсь к ней.` : `↺ "${name}" is available again — switching back to it.`, at: now } satisfies ChatItem)
   }
 
+  /** the paid model in use: the one picked in Settings, else the first one whose provider has a key */
+  private paidId = ''
+  private async paidModelId(models?: ModelInfo[]): Promise<string> {
+    const s = this.settings()
+    const list = models ?? (await this.opencode.listModels(false))
+    const known = new Set(list.map((m) => m.id))
+    const connected = new Set((await this.opencode.providers().catch(() => [])).filter((p) => p.connected).map((p) => p.id))
+    const ok = (id: string) => known.has(id) && connected.has(id.split('/')[0])
+    this.paidId = s.paidModel && s.paidModel !== 'auto' ? (ok(s.paidModel) ? s.paidModel : '') : PAID_MODELS.find(ok) ?? ''
+    return this.paidId
+  }
+
+  private isPaid(id: string) {
+    return !!id && (id === this.paidId || PAID_MODELS.includes(id))
+  }
+
   /** paid model: switched on and still under this month's cap */
   private paidAllowed(): boolean {
     const s = this.settings()
-    if (!s.paidEnabled || !s.paidModel || !(s.paidBudgetCad > 0)) return false
+    if (!s.paidEnabled || !(s.paidBudgetCad > 0)) return false
     return !budgetView(s.paidUsage, s.paidBudgetCad, s.cadPerUsd || 1.4257).over
   }
 
   private budgetText(): string {
     const s = this.settings()
-    if (!s.paidEnabled) return 'The paid Groq model is switched off (Settings → AI agent → Fast model). I am using the free models.'
+    if (!s.paidEnabled) return 'The paid fast model is switched off (Settings → AI agent → Fast model). I am using the free models.'
     return describeBudget(budgetView(s.paidUsage, s.paidBudgetCad, s.cadPerUsd || 1.4257))
   }
 
   /** what each assistant message has already been charged (the event repeats while the message streams) */
   private charged = new Map<string, number>()
   private onUsage(u: { id: string; model: string; tokens: any; cost: number }) {
-    if (!u.model.startsWith('groq/')) return
+    if (!this.isPaid(u.model) && !PRICES[u.model]) return
     const s = this.settings()
     const total = costUsd(u.model, u.tokens ?? {}, u.cost)
     const prev = this.charged.get(u.id)

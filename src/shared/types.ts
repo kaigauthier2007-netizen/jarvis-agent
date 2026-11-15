@@ -77,6 +77,8 @@ export interface Settings {
   /** use the paid fast model (Groq) first, within the monthly budget */
   paidEnabled: boolean
   paidModel: string
+  /** an OpenRouter key was added in Jarvis */
+  openrouterKey: boolean
   /** monthly cap in Canadian dollars */
   paidBudgetCad: number
   paidUsage?: PaidUsage
@@ -159,7 +161,8 @@ export const DEFAULT_SETTINGS: Settings = {
   canvasFeed: '',
   calendarIcs: '',
   paidEnabled: true,
-  paidModel: 'groq/openai/gpt-oss-120b',
+  paidModel: 'auto',
+  openrouterKey: false,
   paidBudgetCad: 5,
   cadPerUsd: 1.4257,
   cadRateAt: 0,

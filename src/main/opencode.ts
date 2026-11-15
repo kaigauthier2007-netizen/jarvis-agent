@@ -156,9 +156,24 @@ export class Opencode extends EventEmitter {
         return pc
       })(),
       // user-defined OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, any gateway…)
-      ...(s.customProvider.enabled && s.customProvider.baseURL
-        ? {
-            provider: {
+      provider: {
+        // (only once the user added an OpenRouter key: a config entry alone makes the provider look connected)
+        // GPT-OSS 120B on whichever OpenRouter host is fastest right now (Cerebras / Groq); priced at the dearest
+        // of those hosts so the budget never under-counts
+        ...(s.openrouterKey ? { openrouter: {
+          models: {
+            'openai/gpt-oss-120b:nitro': {
+              name: 'GPT-OSS 120B (fastest host)',
+              tool_call: true,
+              reasoning: true,
+              temperature: true,
+              cost: { input: 0.35, output: 0.75, cache_read: 0.35 },
+              limit: { context: 131072, output: 32768 }
+            }
+          }
+        } } : {}),
+        ...(s.customProvider.enabled && s.customProvider.baseURL
+          ? {
               custom: {
                 npm: '@ai-sdk/openai-compatible',
                 name: s.customProvider.name || 'Custom',
@@ -172,8 +187,8 @@ export class Opencode extends EventEmitter {
                 )
               }
             }
-          }
-        : {}),
+          : {})
+      },
       agent: {
         vision: {
           description: 'Screen reader: answers questions about an attached screenshot',
