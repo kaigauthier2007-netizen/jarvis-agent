@@ -118,13 +118,28 @@ export class Computer {
     return { path, ...info }
   }
 
-  async scan(o: { uia?: boolean; ocr?: boolean; keepShot?: boolean } = {}): Promise<Scan & { shotPath?: string }> {
+  /** ocr 'auto': read the accessibility tree first and only capture + OCR the screen when the window exposes too
+   *  little (custom-drawn apps, games, canvases) — skips ~0.3–1 s per action in normal apps and browsers */
+  async scan(o: { uia?: boolean; ocr?: boolean | 'auto'; keepShot?: boolean } = {}): Promise<Scan & { shotPath?: string }> {
     const t0 = Date.now()
     let fg = await this.hub.win.call<any>('foreground').catch(() => ({}) as any)
     if (!fg?.hwnd) {
       // no foreground window at this instant (app switching): fall back to the topmost real window
       const w = (await this.hub.win.call<WinWindow[]>('windows').catch(() => [])).find((x) => x.process !== 'electron')
       if (w) fg = w
+    }
+    if (o.ocr === 'auto' && !o.keepShot && fg.hwnd && o.uia !== false) {
+      const uia = await this.hub.scanWin.call<{ window: string; elements: UiaElement[] }>('uia', { hwnd: fg.hwnd, max: 260 }, 25000).catch(() => null)
+      const named = (uia?.elements ?? []).filter((e) => (e.name || e.value || '').trim() && INTERACTIVE.has(e.type)).length
+      if (uia && named >= 12) {
+        // the window's own rectangle (physical pixels, like the UIA coordinates); the last full capture if unknown
+        const scr = fg.w && fg.h ? { x: fg.x ?? 0, y: fg.y ?? 0, w: fg.w, h: fg.h } : (this.last?.screen ?? { x: 0, y: 0, w: 1 << 15, h: 1 << 15 })
+        const marks = this.merge(uia.elements, null, scr)
+        const scan = { at: Date.now(), fg, screen: scr, marks, ocr: null, ms: Date.now() - t0 }
+        if (process.env.JARVIS_DEBUG) console.log(`[computer] fast scan ${scan.ms}ms uia=${uia.elements.length} (no OCR)`)
+        this.last = scan
+        return scan
+      }
     }
     const shot = await this.capture()
     const [ocr, uia] = await Promise.all([
@@ -212,10 +227,17 @@ export class Computer {
 
   /** What changed since `prev`: active window + new items (with ids) + count of vanished items. */
   async observe(prev: Scan | null, settleMs = 450): Promise<string> {
-    await sleep(settleMs)
-    const now = await this.scan({})
+    // look early; only wait the full settle time if nothing has changed yet (most clicks show their effect in < 200 ms)
+    const early = Math.min(settleMs, 180)
+    await sleep(early)
     const key = (m: Mark) => `${m.src === 'uia' ? m.type : 't'}|${normalize(m.text).slice(0, 50)}`
     const before = new Set((prev?.marks ?? []).map(key))
+    let now = await this.scan({ ocr: 'auto' })
+    const changed = (s: Scan) => !prev || prev.fg.title !== s.fg.title || s.marks.some((m) => !before.has(key(m))) || s.marks.length !== prev.marks.length
+    if (!changed(now) && settleMs > early) {
+      await sleep(settleMs - early)
+      now = await this.scan({ ocr: 'auto' })
+    }
     const after = new Set(now.marks.map(key))
     const fresh = now.marks.filter((m) => !before.has(key(m)))
     const gone = [...before].filter((k) => !after.has(k)).length

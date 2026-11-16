@@ -268,7 +268,12 @@ export class JarvisMcp {
       if (lp) return lp
       const scan = await c.scan({ keepShot: h.isVision() || !!image })
       const content: any[] = [{ type: 'text', text: c.digest(scan, { query }) + '\n(Numbers are stable: use them with jarvis_act. Coordinates are screen pixels.)' }]
-      if (scan.shotPath) {
+      // the picture only when asked for, or when the text map is thin (games, canvases, image-heavy pages): an image
+      // costs the model far more time to read than the text map
+      const uiaN = scan.marks.filter((m) => m.src === 'uia').length
+      const attach = image === true || (image !== false && h.isVision() && uiaN < 12)
+      if (scan.shotPath && !attach) rmSync(scan.shotPath, { force: true })
+      else if (scan.shotPath) {
         let img = nativeImage.createFromPath(scan.shotPath)
         if (scan.screen.w > 1600) img = img.resize({ width: 1600 })
         content.push({ type: 'image', data: img.toJPEG(72).toString('base64'), mimeType: 'image/jpeg' })
@@ -276,7 +281,7 @@ export class JarvisMcp {
       }
       return { content }
     }
-    const screenSchema = { query: z.string().optional().describe('only list items whose text contains this'), image: z.boolean().optional() }
+    const screenSchema = { query: z.string().optional().describe('only list items whose text contains this'), image: z.boolean().optional().describe('true = also attach a screenshot (only when you must see pictures, colours or a board/canvas)') }
     s.registerTool(
       'screen',
       {
@@ -879,8 +884,8 @@ export class JarvisMcp {
       'get_app_state',
       {
         description:
-          "PRIMARY way to look at an app: its window as an indexed accessibility tree (every control with element index, role, label, state, secondary actions and Frame in screenshot coordinates) plus a screenshot that works even when the window is covered. Call once per step before acting, and after big UI changes (actions already return the refreshed tree).",
-        inputSchema: { ...target, max_nodes: z.number().optional().describe('default 450; raise for long pages/lists'), screenshot: z.boolean().optional().describe('default true') }
+          "PRIMARY way to look at an app: its window as an indexed accessibility tree (every control with element index, role, label, state, secondary actions and Frame in screenshot coordinates) (text — fast). A screenshot is added automatically for custom-drawn windows; pass screenshot:true only when you must see images/colours/layout. Call once, then act; actions already return the refreshed tree.",
+        inputSchema: { ...target, max_nodes: z.number().optional().describe('default 450; raise for long pages/lists'), screenshot: z.boolean().optional().describe('true = also attach a screenshot (slower); default: only for custom-drawn windows') }
       },
       async (a) => {
         const g = await this.consent()
@@ -890,9 +895,17 @@ export class JarvisMcp {
         const ep = c.begin()
         try {
           const w = await windowFor(a, ep)
-          const st = await N().call<any>('get_window_state', { window: w.id, include_screenshot: a.screenshot !== false, max_nodes: a.max_nodes ?? 450, max_dim: 1600 }, 30000)
+          // text first: the accessibility tree is enough for normal apps; a screenshot (slow to capture, slow for the
+          // model to read) is added only when asked for, or when the window is custom-drawn and the model can see
+          const wantShot = a.screenshot === true
+          let st = await N().call<any>('get_window_state', { window: w.id, include_screenshot: wantShot && h.isVision(), max_nodes: a.max_nodes ?? 450, max_dim: 1600 }, 30000)
+          let body = stateText((st.window as NWin) ?? w, st)
+          if (!wantShot && a.screenshot !== false && h.isVision() && /NOTE: this window exposes almost no accessibility info/.test(body)) {
+            st = await N().call<any>('get_window_state', { window: w.id, include_screenshot: true, max_nodes: a.max_nodes ?? 450, max_dim: 1600 }, 30000)
+            body = stateText((st.window as NWin) ?? w, st)
+          }
           const img = imageOf(st)
-          const content: any[] = [{ type: 'text', text: stateText((st.window as NWin) ?? w, st) }]
+          const content: any[] = [{ type: 'text', text: body }]
           if (img && h.isVision()) content.push(img)
           return { content }
         } catch (e: any) {

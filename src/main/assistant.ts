@@ -18,6 +18,8 @@ import { XttsSidecar } from './xtts'
 import { buildSystemExtra } from './agent-prompt'
 import { matchFast } from './fast-commands'
 import { matchYouTube, resultsUrl, searchFirst } from './youtube'
+import { matchInstant } from './instant'
+import { InstantRunner } from './instant-run'
 import { School, matchSchool } from './school'
 import { PAID_MODELS, PRICES, addUsage, budgetView, costUsd, describeBudget, fetchCadPerUsd, freshUsage } from '../shared/paid'
 import { pathsFor } from './models'
@@ -119,7 +121,19 @@ export class Assistant extends EventEmitter implements Hub {
     })
     this.school = new School(() => this.settings())
     this.mcp = new JarvisMcp(this)
+    this.instant = new InstantRunner({
+      win: this.win,
+      dataDir: base,
+      powershell: (c, t) => this.powershell(c, t),
+      canvasUrl: () => this.settings().canvasUrl,
+      announce: (text) => {
+        this.emit('earcon', 'wake')
+        this.emit('chat', { id: uid(), kind: 'system', text: '⏰ ' + text, at: Date.now() } satisfies ChatItem)
+        void this.say(text)
+      }
+    })
   }
+  readonly instant: InstantRunner
 
   // ---------------------------------------------------------------- Hub
   settings = () => this.settingsStore.get()
@@ -588,6 +602,25 @@ export class Assistant extends EventEmitter implements Hub {
         return
       } catch (e: any) {
         console.warn('[youtube] instant path failed, falling back to the agent:', e?.message || e)
+      }
+    }
+
+    // everyday commands (open apps/sites/folders, tabs, zoom, scroll, windows, dark mode, timers, reminders, lists,
+    // files, time) — no model, no screen reading
+    const inst = matchInstant(text)
+    if (inst) {
+      const t0 = Date.now()
+      try {
+        const say = await this.instant.run(inst)
+        if (say !== null) {
+          const ms = Date.now() - t0
+          this.emit('chat', { id: uid(), kind: 'system', text: `⚡ ${say}${ms > 300 ? ` (${(ms / 1000).toFixed(1)} s)` : ''}`, at: Date.now() } satisfies ChatItem)
+          this.lastAssistantText = say
+          if (via === 'voice' && inst.kind !== 'keys') void this.say(say)
+          return
+        }
+      } catch (e: any) {
+        console.warn('[instant] failed, falling back to the agent:', e?.message || e)
       }
     }
 

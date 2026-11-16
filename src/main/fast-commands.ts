@@ -52,7 +52,7 @@ export function matchFast(raw: string): FastAction | null {
   if (/^(пауза|поставь на паузу|останови музыку|останови( воспроизведение)?|pause( the)?( music| song| video| track)?|stop( the)? music)$/.test(strip)) return { kind: 'media', action: 'play_pause', say: ['Пауза.', 'Paused.'] }
   if (/^(продолжи|продолжай( играть)?|сними с паузы|resume( the)?( music| playback)?|unpause|play)$/.test(strip)) return { kind: 'media', action: 'play_pause', say: ['Продолжаю.', 'Resuming.'] }
   if (/^(следующий( трек| песня| клип)?|дальше|следующая( песня)?|переключи( трек)?|next( track| song)?|skip( this)?( track| song)?)$/.test(strip)) return { kind: 'media', action: 'next', say: ['Следующий.', 'Next.'] }
-  if (/^(предыдущий( трек| песня)?|назад|предыдущая( песня)?|previous( track| song)?|go back|last (track|song))$/.test(strip)) return { kind: 'media', action: 'previous', say: ['Предыдущий.', 'Previous.'] }
+  if (/^(предыдущий( трек| песня)?|назад|предыдущая( песня)?|previous( track| song)?|last (track|song))$/.test(strip)) return { kind: 'media', action: 'previous', say: ['Предыдущий.', 'Previous.'] }
 
   // ---- desktop
   if (/^(сверни все( окна)?|покажи рабочий стол|убери все окна|show( the)? desktop|minimi[sz]e all( windows)?|hide all windows)$/.test(strip)) return { kind: 'desktop', action: 'show_desktop', say: ['Рабочий стол, сэр.', 'Desktop, sir.'] }
