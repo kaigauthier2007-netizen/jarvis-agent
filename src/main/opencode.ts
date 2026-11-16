@@ -134,7 +134,7 @@ export class Opencode extends EventEmitter {
     if (!s.browserControl) return {}
     const args = ['-y', '@playwright/mcp@0.0.85', '--extension', `--browser=${s.browserChannel === 'msedge' ? 'msedge' : 'chrome'}`, '--image-responses=omit', '--timeout-settle=300', '--no-webmcp']
     const command = process.platform === 'win32' ? ['cmd', '/c', 'npx', ...args] : ['npx', ...args]
-    return { web: { type: 'local', command, environment: s.browserToken ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: s.browserToken.trim() } : {}, enabled: true, timeout: 90000 } }
+    return { web: { type: 'local', command, environment: s.browserToken ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: s.browserToken.trim().replace(/^\s*(?:\$env:)?PLAYWRIGHT_MCP_EXTENSION_TOKEN\s*=\s*/i, '').replace(/^["']|["']$/g, '').trim() } : {}, enabled: true, timeout: 90000 } }
   }
 
   private cfgJson() {
