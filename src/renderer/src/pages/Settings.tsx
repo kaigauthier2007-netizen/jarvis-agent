@@ -225,9 +225,14 @@ export function SettingsPage() {
                   </Row>
                 </Group>
                 <Group title={t('sg.startup')}>
-                  <Row label={t('settings.hud')}>
-                    <Seg value={s.hudCorner} options={[['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']]} onChange={(v) => patch({ hudCorner: v })} />
+                  <Row label="On-screen style" hint="Bar: a small black bar at the top of the screen, still while idle. Orb: the animated orb in a corner (uses more CPU).">
+                    <Seg value={s.hudStyle} options={[['pill', 'Bar'], ['orb', 'Orb']]} onChange={(v) => patch({ hudStyle: v })} />
                   </Row>
+                  {s.hudStyle === 'orb' && (
+                    <Row label={t('settings.hud')}>
+                      <Seg value={s.hudCorner} options={[['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']]} onChange={(v) => patch({ hudCorner: v })} />
+                    </Row>
+                  )}
                   <Row label={t('settings.subtitles')}>
                     <Switch on={s.showSubtitles} onChange={(v) => patch({ showSubtitles: v })} />
                   </Row>
@@ -353,8 +358,23 @@ export function SettingsPage() {
             {tab === 'listening' && (
               <>
                 <Group title={t('sg.wake')}>
-                  <Row label={t('settings.wakeEnabled')}>
+                  <Row label={t('settings.wakeEnabled')} hint="Off = hotkey only: the microphone rests while Jarvis is idle, saving CPU.">
                     <Switch on={s.wakeEnabled} onChange={(v) => patch({ wakeEnabled: v })} />
+                  </Row>
+                  <Row label="Hold Right Alt to dictate" hint="Speak while holding Right Alt; release and the text is typed where your cursor is.">
+                    <Switch on={s.dictateEnabled} onChange={(v) => patch({ dictateEnabled: v })} />
+                  </Row>
+                  <Row label="Clean up dictation" hint="Removes um / uh, adds capitals and a full stop.">
+                    <Switch on={s.dictateClean} onChange={(v) => patch({ dictateClean: v })} />
+                  </Row>
+                  <Row label="Tap Ctrl+Shift to type a request" hint="Opens a text box in the bar. Ctrl+Shift+Space also works.">
+                    <Switch on={s.quickTypeEnabled} onChange={(v) => patch({ quickTypeEnabled: v })} />
+                  </Row>
+                  <Row label="Esc stops Jarvis" hint="Only while he is working or talking; Esc still reaches your app.">
+                    <Switch on={s.escStops} onChange={(v) => patch({ escStops: v })} />
+                  </Row>
+                  <Row label="Suggest Perplexity Computer for big jobs" hint='Deep research or long documents: Jarvis starts anyway, and you can say "send it to Perplexity".'>
+                    <Switch on={s.suggestPerplexity} onChange={(v) => patch({ suggestPerplexity: v })} />
                   </Row>
                   <Row label={t('settings.wakePhrases')} col>
                     <Tags values={s.wakePhrases} onChange={(v) => patch({ wakePhrases: v })} />

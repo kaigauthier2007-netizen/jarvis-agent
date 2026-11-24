@@ -42,6 +42,7 @@ export class Overlay {
     })
     win.setAlwaysOnTop(true, 'screen-saver')
     win.setIgnoreMouseEvents(true, { forward: false })
+    win.setContentProtection(true) // outlines never end up in Jarvis's own screen reading (or in screen shares)
     const ready = new Promise<void>((r) => win.webContents.once('did-finish-load', () => r()))
     void win.loadURL(rendererUrl('overlay.html'))
     e = { win, display, ready, targets: 0 }

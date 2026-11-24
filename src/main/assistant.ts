@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import { app, screen } from 'electron'
+import { app, screen, clipboard } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { createHash, randomUUID } from 'crypto'
@@ -23,6 +23,8 @@ import { InstantRunner } from './instant-run'
 import { School, matchSchool } from './school'
 import { PAID_MODELS, PRICES, addUsage, budgetView, costUsd, describeBudget, fetchCadPerUsd, freshUsage } from '../shared/paid'
 import { pathsFor } from './models'
+import { KeyHook } from './keyhook'
+import { cleanDictation, bigTaskReason } from '../shared/dictation'
 
 let idSeq = 0
 const uid = () => `x${Date.now().toString(36)}${(idSeq++).toString(36)}`
@@ -102,6 +104,14 @@ export class Assistant extends EventEmitter implements Hub {
   private askQueue: Promise<string> = Promise.resolve('')
   private askQuestion = ''
   private ackPreparing = false
+  /** Right Alt dictation, Ctrl+Shift quick type, Esc stop, teach-mode clicks */
+  readonly keys = new KeyHook(dataDir())
+  private dictating = false
+  private teaching = ''
+  private guideCancel: (() => void) | null = null
+  private flashText = ''
+  private flashTimer: NodeJS.Timeout | null = null
+  private bigTaskText = ''
   readonly school: School
 
   constructor() {
@@ -252,6 +262,7 @@ export class Assistant extends EventEmitter implements Hub {
 
     this.speech.on('event', (e: SpeechEvent) => void this.onSpeech(e))
     this.speech.start()
+    this.startKeys()
     void this.opencode.start()
     this.prewarmVoices()
     this.school.startWarm()
@@ -293,8 +304,137 @@ export class Assistant extends EventEmitter implements Hub {
       activity: this.activity || undefined,
       steps: this.liveSteps.length ? this.liveSteps : undefined,
       turnStartedAt: this.turnStartedAt || undefined,
-      controlling: this.controlOn
+      controlling: this.controlOn,
+      dictating: this.dictating || undefined,
+      teaching: this.teaching || undefined,
+      flash: this.flashText || undefined,
+      micOn: this.micWanted()
     }
+  }
+
+  /** Hotkey-only mode (wake word off): the microphone feeds nothing while Jarvis is idle — no CPU spent on audio. */
+  private micWanted(): boolean {
+    return this.settings().wakeEnabled || this.dictating || this.commandListening || this.state !== 'idle'
+  }
+
+  /** A short note in the bar ("Typed", "Didn't catch that") that clears itself. */
+  flash(text: string, ms = 2600) {
+    this.flashText = text
+    if (this.flashTimer) clearTimeout(this.flashTimer)
+    this.flashTimer = setTimeout(() => {
+      this.flashText = ''
+      this.emitStatus()
+    }, ms)
+    this.emitStatus()
+  }
+
+  // ---------------------------------------------------------------- keyboard: dictation / quick type / Esc
+  private startKeys() {
+    const s = this.settings()
+    this.keys.on('dictate-down', () => this.dictateDown())
+    this.keys.on('dictate-up', () => this.dictateUp(false))
+    this.keys.on('dictate-cancel', () => this.dictateUp(true))
+    this.keys.on('quick-type', () => this.emit('quickType'))
+    this.keys.on('esc', () => this.onEsc())
+    void this.keys.start({ dictate: s.dictateEnabled, quick: s.quickTypeEnabled }).then((ok) => {
+      if (!ok) console.warn('[keys] key helper unavailable: dictation and Ctrl+Shift tap are off (the Ctrl+Shift+Space fallback still works)')
+      this.emit('keysReady', ok)
+    })
+    this.settingsStore.on('change', (n: any) => this.keys.set({ dictate: n.dictateEnabled, quick: n.quickTypeEnabled }))
+  }
+  get keysOk() {
+    return this.keys.ok
+  }
+
+  private dictateDown() {
+    if (!this.settings().dictateEnabled || this.dictating) return
+    if (this.speakingDepth > 0) this.stopSpeaking()
+    if (!this.speech.startDictation()) return this.flash('Dictation needs the speech models (Settings → Setup)')
+    this.dictating = true
+    this.emit('earcon', 'wake')
+    this.emitStatus()
+  }
+
+  private dictateUp(cancel: boolean) {
+    if (!this.dictating) return
+    this.dictating = false
+    const started = this.speech.stopDictation(cancel)
+    if (!started && !cancel) this.flash('Hold Right Alt while you speak')
+    this.emitStatus()
+  }
+
+  private async onDictation(raw: string) {
+    if (this.state === 'transcribing') this.setState('idle')
+    const text = this.settings().dictateClean ? cleanDictation(raw) : raw.trim()
+    if (!text) return this.flash("Didn't catch that")
+    try {
+      await this.win.call('type', { text: text + (/[.!?]$/.test(text) ? ' ' : '') }, 20000)
+      this.flash('Typed')
+      this.emit('chat', { id: uid(), kind: 'system', text: '✎ Dictated: ' + text, at: Date.now() } satisfies ChatItem)
+    } catch (e: any) {
+      clipboard.writeText(text)
+      this.flash('Copied — press Ctrl+V')
+      console.warn('[dictate] typing failed:', e?.message || e)
+    }
+  }
+
+  private onEsc() {
+    if (!this.settings().escStops) return
+    if (this.guideCancel) return this.guideCancel()
+    const busy = this.opencode?.isBusy || this.speakingDepth > 0 || this.state !== 'idle'
+    if (!busy) return
+    if (this.state === 'listening' && !this.opencode?.isBusy) {
+      this.speech.cancelListen()
+      this.setState('idle')
+      return
+    }
+    void this.abortTask()
+    this.flash('Stopped')
+  }
+
+  // ---------------------------------------------------------------- teach mode: circle a spot, wait for the user's click
+  /**
+   * Outline `target` (physical px), say the instruction, then wait until the user clicks inside it (or Esc / timeout).
+   * Without the key helper, the cursor resting on the spot for a moment counts as done.
+   */
+  async guideStep(target: HighlightTarget, say: string, timeoutSec = 120): Promise<'clicked' | 'timeout' | 'cancelled'> {
+    this.guideCancel?.()
+    this.teaching = say
+    this.emitStatus()
+    await this.overlay.show([{ ...target, shape: target.shape ?? 'circle' }], 0)
+    void this.say(say)
+    const pad = 14
+    const inside = (x: number, y: number) => x >= target.x - pad && x <= target.x + target.w + pad && y >= target.y - pad && y <= target.y + target.h + pad
+    const result = await new Promise<'clicked' | 'timeout' | 'cancelled'>((resolve) => {
+      let done = false
+      const cleanups: (() => void)[] = []
+      const finish = (r: 'clicked' | 'timeout' | 'cancelled') => {
+        if (done) return
+        done = true
+        cleanups.forEach((f) => f())
+        resolve(r)
+      }
+      this.guideCancel = () => finish('cancelled')
+      const t = setTimeout(() => finish('timeout'), timeoutSec * 1000)
+      cleanups.push(() => clearTimeout(t))
+      if (this.keys.ok) {
+        cleanups.push(this.keys.watchClicks((x, y) => inside(x, y) && setTimeout(() => finish('clicked'), 120)))
+      } else {
+        let since = 0
+        const iv = setInterval(() => {
+          const p = screen.dipToScreenPoint(screen.getCursorScreenPoint())
+          if (!inside(p.x, p.y)) return void (since = 0)
+          if (!since) since = Date.now()
+          else if (Date.now() - since > 900) finish('clicked')
+        }, 150)
+        cleanups.push(() => clearInterval(iv))
+      }
+    })
+    this.guideCancel = null
+    this.teaching = ''
+    this.overlay.clear()
+    this.emitStatus()
+    return result
   }
 
   emitStatus() {
@@ -341,6 +481,7 @@ export class Assistant extends EventEmitter implements Hub {
         break
       case 'mode':
         this.commandListening = e.mode === 'command'
+        this.emitStatus()
         if (e.mode === 'wake' && this.askResolve && e.timedOut) this.resolveAsk('')
         if (e.mode === 'wake' && this.state === 'listening') {
           this.setState('idle')
@@ -349,6 +490,9 @@ export class Assistant extends EventEmitter implements Hub {
         break
       case 'transcript':
         await this.onTranscript(e.text, e.lang, e.viaWake)
+        break
+      case 'dictation':
+        await this.onDictation(e.text)
         break
     }
   }
@@ -526,6 +670,7 @@ export class Assistant extends EventEmitter implements Hub {
   async handleCommand(text: string, via: 'voice' | 'text', lang = '') {
     this.lastWasVoice = via === 'voice'
     this.lastLang = this.pickLang(text, lang)
+    this.guideCancel?.()
     if (this.speakingDepth > 0) this.stopSpeaking()
     if (this.opencode.isBusy) {
       this.mcp.computer.cancel() // a new request supersedes the running one: drop any queued clicks/keys
@@ -624,6 +769,23 @@ export class Assistant extends EventEmitter implements Hub {
       }
     }
 
+    // "send that to Perplexity" — hand the last big request (or this one) to Perplexity Computer
+    if (/\b(send|hand|give|move|pass|open)\b.*\b(that|this|it)\b.*\bperplexity\b|^(use|open) perplexity( computer)?$|^(do it in|send to) perplexity( computer)?$/i.test(text.trim())) {
+      const job = this.bigTaskText || this.lastUserText
+      if (this.opencode.isBusy) {
+        this.mcp.computer.cancel()
+        await this.opencode.abort()
+      }
+      if (job) clipboard.writeText(job)
+      await this.win.call('launch', { name: 'https://www.perplexity.ai/computer', wait: 0 }, 15000).catch(() => {})
+      const say = job ? 'Opened Perplexity Computer. Your request is copied, just paste it.' : 'Opened Perplexity Computer.'
+      this.emit('chat', { id: uid(), kind: 'system', text: '⚡ ' + say, at: Date.now() } satisfies ChatItem)
+      this.bigTaskText = ''
+      if (via === 'voice') void this.say(say)
+      this.setState('idle')
+      return
+    }
+
     // "how much budget is left?" — answered from the local usage counter
     if ((/\b(groq|openrouter|open router|budget)\b/i.test(text) || /\b(ai|model|paid|jarvis|my)\s+(usage|credits?|spend|spending)\b/i.test(text)) && /\b(how much|left|remaining|used|check|status|usage|running out|pace)\b/i.test(text) && text.length < 90 && !/\b(email|send|write|make|create)\b/i.test(text)) {
       const answer = this.budgetText()
@@ -648,6 +810,15 @@ export class Assistant extends EventEmitter implements Hub {
     }
 
     await this.autoThread()
+
+    // big research / document jobs: Jarvis still starts right away (no waiting on a question), but offers the hand-off
+    const big = this.settings().suggestPerplexity ? bigTaskReason(text) : ''
+    if (big) {
+      this.bigTaskText = text
+      const tip = `This looks like ${big}. Perplexity Computer may do it better: say "send it to Perplexity" to hand it over.`
+      this.emit('chat', { id: uid(), kind: 'system', text: tip, at: Date.now() } satisfies ChatItem)
+      this.flash('Tip: say "send it to Perplexity" for big jobs', 6000)
+    } else this.bigTaskText = ''
 
     const r = this.matchRoutine(text)
     if (r) {
@@ -1495,6 +1666,7 @@ export class Assistant extends EventEmitter implements Hub {
   }
 
   async dispose() {
+    this.keys.stop()
     this.speech.dispose()
     this.tts.dispose()
     this.xtts.stop()

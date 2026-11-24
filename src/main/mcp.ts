@@ -27,6 +27,7 @@ export interface Hub {
   askVision(jpeg: Buffer, question: string): Promise<string>
   confirmControl(what: string): Promise<boolean>
   school: School
+  guideStep(target: HighlightTarget, say: string, timeoutSec?: number): Promise<'clicked' | 'timeout' | 'cancelled'>
 }
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
@@ -257,6 +258,30 @@ export class JarvisMcp {
         const a = await h.ask(question, options)
         h.clearHighlight()
         return text(a ? `User answered: ${a}` : 'The user did not answer in time.')
+      }
+    )
+
+    // ---- teach mode ------------------------------------------------------
+    s.registerTool(
+      'guide_step',
+      {
+        description:
+          'TEACH MODE ONLY (the user asked to be shown / taught / walked through something): circle ONE spot on the real screen, say the instruction, and WAIT until the USER clicks it themselves. Returns when they clicked (with what changed on screen), pressed Esc, or timed out. Call once per step; never click for them in teach mode.',
+        inputSchema: {
+          target: targetSchema.describe('the spot to circle: prefer find (visible text) or mark'),
+          say: z.string().describe('the instruction for this step, <= 20 words, e.g. "Click Insert, at the top."'),
+          timeout_sec: z.number().optional().describe('how long to wait for the click (default 120)')
+        }
+      },
+      async ({ target, say, timeout_sec }) => {
+        const g = await this.consent()
+        if (g) return g
+        const [t] = await this.resolveTargets([target])
+        if (!t) return err(`Could not find "${target.find ?? target.mark ?? 'that spot'}" on screen. Look again (jarvis_screen) and pass a mark or x/y/w/h.`)
+        const r = await h.guideStep(t, say, timeout_sec ?? 120)
+        if (r === 'cancelled') return text('The user stopped the walkthrough (Esc or a new request). Stop teaching; do not continue.')
+        if (r === 'timeout') return text('The user did not click within the time limit. Ask if they want to continue (jarvis_ask) or stop.')
+        return this.result('The user clicked the highlighted spot.', true, 500)
       }
     )
 

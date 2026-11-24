@@ -2073,3 +2073,168 @@ body.update { background: transparent; }
 .upd-meta { display: flex; justify-content: space-between; margin: 8px 0 14px; color: var(--muted); font-size: 12px; }
 .upd-pct { color: var(--accent); font-family: var(--font-head); }
 .upd-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* ---------------------------------------------------------------- Nixi-style bar (top of the screen) */
+.pill-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding-top: 2px;
+  pointer-events: none;
+}
+.pill {
+  --eye: rgba(255, 255, 255, 0.55);
+  pointer-events: auto;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 64px;
+  max-width: 560px;
+  height: 26px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: #0a0a0c;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 22px -8px rgba(0, 0, 0, 0.8);
+  color: #f2f2f4;
+  font-size: 13px;
+  line-height: 1.3;
+  justify-content: center;
+  overflow: hidden;
+}
+.pill.open {
+  min-width: 180px;
+  height: auto;
+  min-height: 34px;
+  padding: 7px 16px 7px 13px;
+  justify-content: flex-start;
+  border-radius: 18px;
+}
+.pill.typing {
+  width: 460px;
+  cursor: text;
+}
+.pill .eye {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--eye);
+  box-shadow: 0 0 8px var(--eye);
+}
+.pill .eye.hollow {
+  background: transparent;
+  border: 1.5px solid var(--eye);
+  box-shadow: none;
+}
+.pill.s-wake,
+.pill.s-listening {
+  --eye: var(--accent);
+}
+.pill.s-transcribing {
+  --eye: #a78bfa;
+}
+.pill.s-thinking {
+  --eye: #fbbf24;
+}
+.pill.s-speaking {
+  --eye: #34d399;
+}
+.pill.s-dictating {
+  --eye: #f87171;
+}
+.pill.s-teaching {
+  --eye: #fbbf24;
+}
+.pill.s-error {
+  --eye: #ef4444;
+}
+/* motion only while something is happening (idle = zero animation work) */
+.pill.s-thinking .eye,
+.pill.s-transcribing .eye,
+.pill.s-teaching .eye {
+  animation: pill-breathe 1.1s ease-in-out infinite;
+}
+.pill.s-dictating .eye {
+  animation: pill-breathe 0.7s ease-in-out infinite;
+}
+@keyframes pill-breathe {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+.pill .bars {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+.pill .bars i {
+  width: 2.5px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--eye);
+  transform-origin: center;
+  animation: pill-bar 0.9s ease-in-out infinite;
+}
+.pill .bars i:nth-child(2) {
+  animation-delay: -0.3s;
+}
+.pill .bars i:nth-child(3) {
+  animation-delay: -0.6s;
+}
+.pill .bars i:nth-child(4) {
+  animation-delay: -0.15s;
+}
+.pill.s-speaking .bars i {
+  animation-duration: 0.6s;
+}
+@keyframes pill-bar {
+  0%,
+  100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.pill-text {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-align: left;
+}
+.pill-text b {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.pill-text .dim {
+  color: rgba(242, 242, 244, 0.72);
+}
+.pill-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  user-select: text;
+}
+.pill-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+.pill-perms {
+  pointer-events: auto;
+  width: 440px;
+}

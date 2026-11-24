@@ -92,6 +92,18 @@ export interface Settings {
   browserChannel: 'chrome' | 'msedge'
   /** PLAYWRIGHT_MCP_EXTENSION_TOKEN from the extension (skips the approval page) */
   browserToken: string
+  /** on-screen look: the Nixi-style black bar at the top, or the classic orb in a corner */
+  hudStyle: 'pill' | 'orb'
+  /** hold Right Alt to dictate into the focused text field */
+  dictateEnabled: boolean
+  /** tidy dictation (drop "um", capitalise, punctuation) */
+  dictateClean: boolean
+  /** tap Ctrl+Shift to type a request into the bar */
+  quickTypeEnabled: boolean
+  /** Esc stops Jarvis while he is working or talking (the key still reaches your app) */
+  escStops: boolean
+  /** offer Perplexity Computer for big research / document jobs */
+  suggestPerplexity: boolean
 }
 
 export interface PaidUsage {
@@ -169,7 +181,13 @@ export const DEFAULT_SETTINGS: Settings = {
   paidWarned: '',
   browserControl: false,
   browserChannel: 'chrome',
-  browserToken: ''
+  browserToken: '',
+  hudStyle: 'pill',
+  dictateEnabled: true,
+  dictateClean: true,
+  quickTypeEnabled: true,
+  escStops: true,
+  suggestPerplexity: true
 }
 
 export interface Thread {
@@ -336,6 +354,14 @@ export interface AppStatus {
   turnStartedAt?: number
   controlling?: boolean
   clone?: 'off' | 'starting' | 'ready' | 'error'
+  /** Right Alt held: recording dictation */
+  dictating?: boolean
+  /** teach mode: the instruction for the step on screen */
+  teaching?: string
+  /** a hint shown briefly in the bar (e.g. "Dictation typed") */
+  flash?: string
+  /** the microphone should feed the speech engine (false in hotkey-only mode while idle) */
+  micOn?: boolean
 }
 
 export const IPC = {

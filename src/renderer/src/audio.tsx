@@ -6,6 +6,8 @@ let settings: Settings | null = null
 let micCtx: AudioContext | null = null
 let micStream: MediaStream | null = null
 let currentMic = ''
+/** false in hotkey-only mode while Jarvis is idle: nothing is sent, the speech engine sleeps */
+let micOn = true
 
 const WORKLET = `
 class Capture extends AudioWorkletProcessor {
@@ -59,11 +61,13 @@ async function startMic() {
     const src = micCtx.createMediaStreamSource(micStream)
     const node = new AudioWorkletNode(micCtx, 'capture')
     node.port.onmessage = (e) => {
+      if (!micOn) return
       const { pcm, rms } = e.data as { pcm: Float32Array; rms: number }
       api.send(IPC.audioChunk, pcm.buffer)
       api.send(IPC.micLevel, Math.min(1, rms * 7))
     }
     src.connect(node)
+    if (!micOn) void micCtx.suspend()
     // keep the graph alive without audible output
     const mute = micCtx.createGain()
     mute.gain.value = 0
@@ -200,6 +204,15 @@ async function main() {
     settings = s
     if (changed) void startMic()
   })
+  // hotkey-only mode: pause the whole capture graph while idle (no audio thread work at all), resume instantly on demand
+  const gate = (on: boolean) => {
+    if (on === micOn) return
+    micOn = on
+    if (on) void micCtx?.resume()
+    else void micCtx?.suspend()
+  }
+  api.on(IPC.status, (st: { micOn?: boolean }) => gate(st.micOn !== false))
+  void api.invoke('status:get').then((st: any) => st && gate(st.micOn !== false))
   api.on(IPC.ttsPlay, (req: any) => void play(req))
   api.on(IPC.ttsStop, () => {
     try {

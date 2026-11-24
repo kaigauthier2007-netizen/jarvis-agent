@@ -120,7 +120,7 @@ function syncHud() {
   if (!hudWin || hudWin.isDestroyed()) return
   // permission cards must always be reachable: grow the HUD, make it clickable, and keep it visible
   if (pendingPerms.size > 0) {
-    const sig = 'perm' + pendingPerms.size + assistant.settings().hudCorner
+    const sig = 'perm' + pendingPerms.size + assistant.settings().hudCorner + assistant.settings().hudStyle
     if (sig !== hudSig) {
       hudSig = sig
       hudWin.setBounds(hudBounds(assistant.settings().hudCorner, 200 * pendingPerms.size))
@@ -131,8 +131,21 @@ function syncHud() {
     raiseHud()
     return
   }
+  // typing a request into the bar: clickable + focusable until Enter / Esc
+  if (typing) {
+    const sig = 'type' + assistant.settings().hudStyle
+    if (sig !== hudSig) {
+      hudSig = sig
+      hudWin.setBounds(hudBounds(assistant.settings().hudCorner))
+      hudWin.setIgnoreMouseEvents(false)
+      hudWin.setFocusable(true)
+    }
+    if (!hudWin.isVisible()) hudWin.showInactive()
+    raiseHud()
+    return
+  }
   // normal mode: only touch the window when something changed (every style change risks losing TOPMOST)
-  const sig = 'idle' + assistant.settings().hudCorner
+  const sig = 'idle' + assistant.settings().hudCorner + assistant.settings().hudStyle
   if (sig !== hudSig) {
     hudSig = sig
     hudWin.setBounds(hudBounds(assistant.settings().hudCorner))
@@ -158,8 +171,15 @@ function syncHud() {
 
 const pendingPerms = new Set<string>()
 
+let typing = false
 function hudBounds(corner: Settings['hudCorner'], extra = 0) {
   const wa = screen.getPrimaryDisplay().workArea
+  if (assistant.settings().hudStyle !== 'orb') {
+    // Nixi-style bar: a strip at the top centre; everything outside the bar itself is see-through and click-through
+    const w = 620
+    const h = Math.min(wa.height - 40, (typing ? 150 : 170) + extra)
+    return { x: Math.round(wa.x + (wa.width - w) / 2), y: wa.y + 6, width: w, height: h }
+  }
   const w = 520 // orb glow (~300 px) + the letter-spaced state label must fit, or the label is clipped
   const h = Math.min(wa.height - 40, 260 + extra)
   const m = 14
@@ -181,6 +201,7 @@ function createHud() {
     show: false,
     webPreferences: { preload: preloadPath(), backgroundThrottling: false }
   })
+  hudWin.setContentProtection(true) // never in screenshots / screen shares (nor in Jarvis's own screen reading)
   hudWin.setAlwaysOnTop(true, 'screen-saver')
   hudWin.setIgnoreMouseEvents(true, { forward: true })
   hudWin.once('ready-to-show', syncHud)
@@ -207,9 +228,28 @@ function showMain() {
   mainWin!.focus()
 }
 
+/** Ctrl+Shift tap (or Ctrl+Shift+Space): a text box in the bar, like Spotlight. Enter sends, Esc closes. */
+function openQuickType() {
+  if (!hudWin || hudWin.isDestroyed()) return
+  typing = true
+  syncHud()
+  hudWin.focus()
+  hudWin.webContents.focus()
+  hudWin.webContents.send('hud:type', true)
+}
+function closeQuickType() {
+  if (!typing) return
+  typing = false
+  hudWin?.webContents.send('hud:type', false)
+  hudWin?.blur() // hand focus back to the app the user was in
+  syncHud()
+}
+
 function registerHotkey() {
   globalShortcut.unregisterAll()
   globalShortcut.register('Control+Alt+K', () => assistant.emergencyStop())
+  // fallback for when the key helper can't run (it handles the plain Ctrl+Shift tap)
+  if (assistant.settings().quickTypeEnabled) globalShortcut.register('Control+Shift+Space', openQuickType)
   const key = assistant.settings().hotkey
   if (!key) return
   try {
@@ -264,7 +304,9 @@ function applySettings(patch: Partial<Settings>) {
   if (patch.autoUpdate) updater.setMode(patch.autoUpdate)
   if (patch.hotkey !== undefined) registerHotkey()
   if (patch.autoStart !== undefined) applyAutoStart()
-  if (patch.hudCorner) {
+  if (patch.quickTypeEnabled !== undefined) registerHotkey()
+  if (patch.hudStyle) hudWin?.webContents.send('hud:style', patch.hudStyle)
+  if (patch.hudCorner || patch.hudStyle) {
     hudSig = ''
     syncHud()
   }
@@ -415,12 +457,17 @@ function wireIpc() {
     else if (action === 'close') w.close()
     else if (action === 'showMain') showMain()
     else if (action === 'hud-interactive') hudWin?.setIgnoreMouseEvents(false)
-    else if (action === 'hud-passthrough') hudWin?.setIgnoreMouseEvents(true, { forward: true })
+    else if (action === 'hud-passthrough') !typing && pendingPerms.size === 0 && hudWin?.setIgnoreMouseEvents(true, { forward: true })
+    else if (action === 'hud-type-done') closeQuickType()
   })
 
   // audio host → speech engine
   ipcMain.on(IPC.audioChunk, (_e, buf: ArrayBuffer) => assistant.speech.feed(buf))
-  ipcMain.on(IPC.micLevel, (_e, level: number) => toUi(IPC.micLevel, level))
+  // the level meter only matters while Jarvis is listening: don't wake two renderers 20×/s for nothing
+  ipcMain.on(IPC.micLevel, (_e, level: number) => {
+    const st = assistant.state
+    if (st === 'listening' || st === 'wake') toUi(IPC.micLevel, level)
+  })
   ipcMain.on(IPC.ttsLevel, (_e, level: number) => toUi(IPC.ttsLevel, level))
   ipcMain.on(IPC.ttsEnded, (_e, id: string) => assistant.onPlayEnded(id))
 }
@@ -488,6 +535,7 @@ function wireAssistantEvents() {
   assistant.on('stopPlayback', () => hudWin?.webContents.send(IPC.ttsStop))
   assistant.on('wake', () => hudWin?.webContents.send('audio:earcon', 'wake'))
   assistant.on('earcon', (kind: string) => hudWin?.webContents.send('audio:earcon', kind))
+  assistant.on('quickType', openQuickType)
 }
 
 async function debugPrompts(list: string[]) {

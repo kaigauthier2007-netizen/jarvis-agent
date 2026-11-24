@@ -17,6 +17,7 @@ export type SpeechEvent =
   | { type: 'noResult' }
   | { type: 'mode'; mode: 'wake' | 'command'; timedOut?: boolean }
   | { type: 'transcript'; text: string; raw: string; woke: boolean; ms: number; viaWake: boolean; lang: string }
+  | { type: 'dictation'; text: string; lang: string; ms: number }
 
 interface Job {
   id: number
@@ -24,6 +25,7 @@ interface Job {
   commandMode: boolean
   gateHit: boolean
   partial: string
+  dictation?: boolean
 }
 
 /** The big recognisers exit after this long without work, returning ~550 MB to the OS. */
@@ -45,6 +47,8 @@ export class SpeechEngine extends EventEmitter {
   private produced = false
   private seq = 0
   ready = false
+  /** Right Alt held: audio goes into this buffer instead of the wake-word worker */
+  private dictBuf: Float32Array[] | null = null
 
   constructor(
     private base: string,
@@ -208,6 +212,11 @@ export class SpeechEngine extends EventEmitter {
       this.childReady = true
       this.pump()
     } else if (m.type === 'event') {
+      if (this.inFlight?.dictation && m.event.type === 'transcript') {
+        this.produced = true
+        this.emit('event', { type: 'dictation', text: String(m.event.raw || m.event.text || ''), lang: m.event.lang, ms: m.event.ms })
+        return
+      }
       if (m.event.type === 'transcript') {
         this.produced = true
         // A command we were waiting for has been consumed: leave command mode BEFORE the consumer sees the transcript,
@@ -232,9 +241,42 @@ export class SpeechEngine extends EventEmitter {
 
   // ------------------------------------------------------------------ controls
   feed(buf: ArrayBuffer) {
+    if (this.dictBuf) {
+      if (this.dictBuf.length < 16000 * 120 / 800) this.dictBuf.push(new Float32Array(buf)) // 2 minutes max
+      return
+    }
     if (!this.worker || !this.ready) return
     const samples = new Float32Array(buf)
     this.worker.postMessage({ type: 'audio', samples }, [samples.buffer])
+  }
+
+  get dictating() {
+    return !!this.dictBuf
+  }
+
+  /** Right Alt pressed: start recording, and wake the recogniser now so it is ready when the key is released. */
+  startDictation() {
+    if (this.missing().length) return false
+    this.dictBuf = []
+    this.ensureChild()
+    return true
+  }
+
+  /** Right Alt released: transcribe what was said (result arrives as a 'dictation' event). False = nothing to do. */
+  stopDictation(cancel = false): boolean {
+    const parts = this.dictBuf
+    this.dictBuf = null
+    if (!parts || cancel) return false
+    const n = parts.reduce((a, p) => a + p.length, 0)
+    if (n < 16000 * 0.35) return false // a tap, not speech
+    const samples = new Float32Array(n + 3200)
+    let o = 0
+    for (const p of parts) {
+      samples.set(p, o)
+      o += p.length
+    }
+    this.enqueue({ samples, commandMode: true, gateHit: true, partial: '', dictation: true })
+    return true
   }
 
   listenFor(seconds: number) {
