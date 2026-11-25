@@ -26,8 +26,10 @@ app.commandLine.appendSwitch('enable-features', 'NetworkServiceInProcess')
 app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess,SpareRendererForSitePerProcess,CalculateNativeWinOcclusion')
 
 let assistant: Assistant
-let mainWin: BrowserWindow | null = null
-let hudWin: BrowserWindow | null = null
+/** The bar at the top of the screen: Jarvis's only always-present window. It also hosts the microphone and speech playback. */
+let barWin: BrowserWindow | null = null
+/** Settings / Commands / Memory: created only when asked for, destroyed when closed (its memory is freed). */
+let settingsWin: BrowserWindow | null = null
 let tray: Tray | null = null
 let updateWin: BrowserWindow | null = null
 /** small frameless Jarvis-styled window for updates (replaces system dialogs) */
@@ -46,6 +48,7 @@ function showUpdateWindow() {
     maximizable: false,
     fullscreenable: false,
     show: false,
+    skipTaskbar: true,
     // transparent so only the rounded card is drawn (an opaque frameless window has square corners)
     transparent: true,
     backgroundColor: '#00000000',
@@ -61,195 +64,155 @@ function showUpdateWindow() {
 const updater = new Updater({ show: showUpdateWindow })
 let quitting = false
 
-const all = () => [mainWin, hudWin, updateWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
+const all = () => [barWin, settingsWin, updateWin].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
 const broadcast = (ch: string, ...args: unknown[]) => all().forEach((w) => w.webContents.send(ch, ...args))
-const toUi = (ch: string, ...args: unknown[]) => [mainWin, hudWin].forEach((w) => w && !w.isDestroyed() && w.webContents.send(ch, ...args))
+const toUi = (ch: string, ...args: unknown[]) => [barWin, settingsWin].forEach((w) => w && !w.isDestroyed() && w.webContents.send(ch, ...args))
+const toBar = (ch: string, ...args: unknown[]) => barWin && !barWin.isDestroyed() && barWin.webContents.send(ch, ...args)
 
 function iconImage() {
   const p = resourcePath('icon.png')
   return existsSync(p) ? nativeImage.createFromPath(p) : nativeImage.createEmpty()
 }
 
-function createMain() {
-  const s = assistant.settings()
+// ---------------------------------------------------------------- Settings window (on demand)
+function openSettings(page: 'settings' | 'routines' | 'memory' = 'settings') {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.webContents.send('app:page', page)
+    if (settingsWin.isMinimized()) settingsWin.restore()
+    settingsWin.show()
+    settingsWin.focus()
+    return
+  }
   const promo = !!process.env.JARVIS_PROMO // off-screen rendering for the promo video (src/main/promo.ts)
-  mainWin = new BrowserWindow({
-    width: promo ? 1080 : 1180,
-    height: promo ? 1920 : 760,
+  settingsWin = new BrowserWindow({
+    width: promo ? 1080 : 1000,
+    height: promo ? 1920 : 720,
     useContentSize: promo,
-    minWidth: 900,
-    minHeight: 600,
+    minWidth: 760,
+    minHeight: 540,
     show: false,
     frame: false,
+    skipTaskbar: true, // Jarvis has no taskbar button; the tray icon and the bar reopen this window
     backgroundColor: '#05080d',
-    title: 'Jarvis',
+    title: 'Jarvis settings',
     icon: iconImage(),
-    webPreferences: { preload: preloadPath(), backgroundThrottling: false, offscreen: promo }
+    webPreferences: { preload: preloadPath(), offscreen: promo }
   })
-  mainWin.on('ready-to-show', () => {
-    if (!s.startMinimized) mainWin?.show()
+  settingsWin.once('ready-to-show', () => {
+    settingsWin?.show()
+    settingsWin?.focus()
   })
-  // closing to the tray DESTROYS the window (≈200 MB of renderer memory); showMain() rebuilds it from main-process state
-  // closing the main window quits Jarvis completely (no tray, no HUD, no background processes)
-  mainWin.on('close', () => {
-    if (!quitting) app.quit()
-  })
-  mainWin.on('closed', () => {
-    mainWin = null
-    syncHud()
-  })
-  mainWin.webContents.setWindowOpenHandler(({ url }) => {
+  // closing it really closes it: nothing of the old dashboard stays loaded in the background
+  settingsWin.on('closed', () => (settingsWin = null))
+  settingsWin.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
   })
-  // the HUD would sit on top of the main window, so it only shows while the main window is not in use
-  for (const ev of ['focus', 'blur', 'show', 'hide', 'minimize', 'restore', 'move', 'resize', 'maximize', 'unmaximize'] as const) mainWin.on(ev as any, syncHud)
-  void mainWin.loadURL(rendererUrl('index.html'))
+  void settingsWin.loadURL(rendererUrl('index.html', '?page=' + page))
 }
 
-/** Windows drops TOPMOST on a window when its style flags change (focusable / click-through) or when another topmost window
- *  (video players, games, taskbar thumbnails) is raised: re-assert it at the highest level every time the HUD is touched. */
-function raiseHud() {
-  if (!hudWin || hudWin.isDestroyed() || !hudWin.isVisible()) return
-  hudWin.setAlwaysOnTop(true, 'screen-saver')
-  hudWin.moveTop()
-}
-
-let hudSig = ''
-function syncHud() {
-  if (!hudWin || hudWin.isDestroyed()) return
-  // permission cards must always be reachable: grow the HUD, make it clickable, and keep it visible
-  if (pendingPerms.size > 0) {
-    const sig = 'perm' + pendingPerms.size + assistant.settings().hudCorner + assistant.settings().hudStyle
-    if (sig !== hudSig) {
-      hudSig = sig
-      hudWin.setBounds(hudBounds(assistant.settings().hudCorner, 200 * pendingPerms.size))
-      hudWin.setIgnoreMouseEvents(false)
-      hudWin.setFocusable(true)
-    }
-    if (!hudWin.isVisible()) hudWin.showInactive()
-    raiseHud()
-    return
-  }
-  // typing a request into the bar: clickable + focusable until Enter / Esc
-  if (typing) {
-    const sig = 'type' + assistant.settings().hudStyle
-    if (sig !== hudSig) {
-      hudSig = sig
-      hudWin.setBounds(hudBounds(assistant.settings().hudCorner))
-      hudWin.setIgnoreMouseEvents(false)
-      hudWin.setFocusable(true)
-    }
-    if (!hudWin.isVisible()) hudWin.showInactive()
-    raiseHud()
-    return
-  }
-  // normal mode: only touch the window when something changed (every style change risks losing TOPMOST)
-  const sig = 'idle' + assistant.settings().hudCorner + assistant.settings().hudStyle
-  if (sig !== hudSig) {
-    hudSig = sig
-    hudWin.setBounds(hudBounds(assistant.settings().hudCorner))
-    hudWin.setFocusable(false)
-    hudWin.setIgnoreMouseEvents(true, { forward: true })
-  }
-  // the HUD would sit on top of the main window while the user is looking at it: hide it only then — i.e. when the main
-  // window is the focused one and the two rectangles intersect (a main window hidden behind other apps must not hide the HUD)
-  let overlaps = false
-  if (mainWin && !mainWin.isDestroyed() && mainWin.isVisible() && !mainWin.isMinimized() && mainWin.isFocused()) {
-    const a = mainWin.getBounds()
-    const b = hudWin.getBounds()
-    overlaps = a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
-  }
-  if (process.env.JARVIS_DEBUG_HUD) console.log('[hud]', JSON.stringify({ overlaps, visible: hudWin.isVisible(), mainFocused: !!mainWin && !mainWin.isDestroyed() && mainWin.isFocused(), mainVisible: !!mainWin && !mainWin.isDestroyed() && mainWin.isVisible(), bounds: hudWin.getBounds(), onTop: hudWin.isAlwaysOnTop() }))
-  if (overlaps) {
-    if (hudWin.isVisible()) hudWin.hide()
-  } else {
-    if (!hudWin.isVisible()) hudWin.showInactive()
-    raiseHud()
-  }
-}
-
-const pendingPerms = new Set<string>()
-
-let typing = false
-function hudBounds(corner: Settings['hudCorner'], extra = 0) {
+// ---------------------------------------------------------------- the bar
+/** The window is always exactly the size of what is drawn, so it never blocks clicks beside the bar. */
+let barSize = { width: 210, height: 34 }
+let barExpanded = false
+function barBounds() {
   const wa = screen.getPrimaryDisplay().workArea
-  if (assistant.settings().hudStyle !== 'orb') {
-    // Nixi-style bar: a strip at the top centre; everything outside the bar itself is see-through and click-through
-    const w = 620
-    const h = Math.min(wa.height - 40, (typing ? 150 : 170) + extra)
-    return { x: Math.round(wa.x + (wa.width - w) / 2), y: wa.y + 6, width: w, height: h }
-  }
-  const w = 520 // orb glow (~300 px) + the letter-spaced state label must fit, or the label is clipped
-  const h = Math.min(wa.height - 40, 260 + extra)
-  const m = 14
-  const x = corner.endsWith('r') ? wa.x + wa.width - w - m : wa.x + m
-  const y = corner.startsWith('b') ? wa.y + wa.height - h - m : wa.y + m
-  return { x, y, width: w, height: h }
+  const width = Math.min(barSize.width, wa.width - 20)
+  const height = Math.min(barSize.height, wa.height - 20)
+  return { x: Math.round(wa.x + (wa.width - width) / 2), y: wa.y, width, height }
+}
+function placeBar() {
+  if (!barWin || barWin.isDestroyed()) return
+  const b = barBounds()
+  const cur = barWin.getBounds()
+  if (cur.x !== b.x || cur.y !== b.y || cur.width !== b.width || cur.height !== b.height) barWin.setBounds(b)
+}
+function barGeometry() {
+  const wa = screen.getPrimaryDisplay().workArea
+  return { maxHeight: Math.max(240, Math.round(wa.height * 0.72)), maxWidth: wa.width - 20 }
 }
 
-function createHud() {
-  hudWin = new BrowserWindow({
-    ...hudBounds(assistant.settings().hudCorner),
+function createBar(showNow: boolean) {
+  barWin = new BrowserWindow({
+    ...barBounds(),
     transparent: true,
+    backgroundColor: '#00000000',
     frame: false,
     resizable: false,
-    skipTaskbar: true,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true, // no taskbar button
     alwaysOnTop: true,
-    focusable: false,
     hasShadow: false,
     show: false,
+    title: 'Jarvis',
+    icon: iconImage(),
+    // the bar hosts the microphone (wake word) and the voice: it must keep running while hidden
     webPreferences: { preload: preloadPath(), backgroundThrottling: false }
   })
-  hudWin.setContentProtection(true) // never in screenshots / screen shares (nor in Jarvis's own screen reading)
-  hudWin.setAlwaysOnTop(true, 'screen-saver')
-  hudWin.setIgnoreMouseEvents(true, { forward: true })
-  hudWin.once('ready-to-show', syncHud)
-  // keep it visible and on top: re-assert periodically (fullscreen apps and other topmost windows push it down), and follow
-  // monitor changes (unplugged display, resolution / scaling change would leave it off-screen)
-  setInterval(() => {
-    if (!hudWin || hudWin.isDestroyed()) return
-    if (!hudWin.isVisible() || hudWin.isMinimized()) return syncHud()
-    raiseHud()
-  }, 2000)
+  barWin.setAlwaysOnTop(true, 'screen-saver')
+  barWin.setContentProtection(true) // never in screenshots / screen shares (nor in Jarvis's own screen reading)
+  barWin.once('ready-to-show', () => {
+    if (showNow) showBar()
+  })
+  // closing (Alt+F4) only hides it: Quit lives in the tray
+  barWin.on('close', (e) => {
+    if (quitting) return
+    e.preventDefault()
+    hideBar()
+  })
+  barWin.on('closed', () => (barWin = null))
+  barWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  barWin.webContents.on('will-navigate', (e, url) => {
+    e.preventDefault()
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url)
+  })
   for (const ev of ['display-added', 'display-removed', 'display-metrics-changed'] as const)
     screen.on(ev as any, () => {
-      hudSig = ''
-      syncHud()
+      placeBar()
+      toBar('bar:geom', barGeometry())
     })
-  hudWin.on('hide', () => setTimeout(syncHud, 400)) // never stay hidden while nothing justifies it
-  void hudWin.loadURL(rendererUrl('hud.html') + (process.env.JARVIS_PROMO ? '?noaudio=1' : '')) // promo capture must never listen to the room
+  void barWin.loadURL(rendererUrl('bar.html') + (process.env.JARVIS_PROMO ? '?noaudio=1' : ''))
 }
 
-
-function showMain() {
-  if (!mainWin || mainWin.isDestroyed()) createMain()
-  mainWin!.show()
-  mainWin!.focus()
+/** Show the bar without taking keyboard focus (the app you were in keeps it). */
+function showBar(opts: { expand?: boolean; focus?: boolean; view?: 'chat' | 'history' } = {}) {
+  if (!barWin || barWin.isDestroyed()) return
+  placeBar()
+  if (opts.expand || opts.focus || opts.view) toBar('bar:open', { focus: !!opts.focus, view: opts.view })
+  if (opts.focus) {
+    barWin.show()
+    barWin.focus()
+    barWin.webContents.focus()
+  } else if (!barWin.isVisible()) barWin.showInactive()
+  // Windows drops TOPMOST when another topmost window (video player, game overlay) is raised: re-assert on every reveal
+  barWin.setAlwaysOnTop(true, 'screen-saver')
+  barWin.moveTop()
 }
 
-/** Ctrl+Shift tap (or Ctrl+Shift+Space): a text box in the bar, like Spotlight. Enter sends, Esc closes. */
-function openQuickType() {
-  if (!hudWin || hudWin.isDestroyed()) return
-  typing = true
-  syncHud()
-  hudWin.focus()
-  hudWin.webContents.focus()
-  hudWin.webContents.send('hud:type', true)
+/** Hide = Jarvis keeps running (wake word, hotkeys, tray); Quit in the tray ends everything. */
+function hideBar() {
+  if (!barWin || barWin.isDestroyed()) return
+  toBar('bar:hidden')
+  if (barWin.isFocused()) barWin.blur()
+  barWin.hide()
 }
-function closeQuickType() {
-  if (!typing) return
-  typing = false
-  hudWin?.webContents.send('hud:type', false)
-  hudWin?.blur() // hand focus back to the app the user was in
-  syncHud()
+
+function toggleBar() {
+  if (barWin?.isVisible()) hideBar()
+  else showBar()
 }
 
 function registerHotkey() {
   globalShortcut.unregisterAll()
   globalShortcut.register('Control+Alt+K', () => assistant.emergencyStop())
   // fallback for when the key helper can't run (it handles the plain Ctrl+Shift tap)
-  if (assistant.settings().quickTypeEnabled) globalShortcut.register('Control+Shift+Space', openQuickType)
+  if (assistant.settings().quickTypeEnabled) globalShortcut.register('Control+Shift+Space', () => showBar({ expand: true, focus: true }))
   const key = assistant.settings().hotkey
   if (!key) return
   try {
@@ -263,13 +226,20 @@ function applyAutoStart() {
   app.setLoginItemSettings({ openAtLogin: assistant.settings().autoStart, args: ['--hidden'] })
 }
 
+function quitJarvis() {
+  quitting = true
+  app.quit()
+}
+
 function buildTray() {
   tray = new Tray(iconImage().resize({ width: 16, height: 16 }))
   tray.setToolTip('Jarvis')
   const menu = () =>
     Menu.buildFromTemplate([
-      { label: 'Open Jarvis', click: showMain },
+      { label: 'Show Jarvis', click: () => showBar({ expand: true }) },
+      { label: 'Hide Jarvis', click: hideBar },
       { label: 'Listen now', click: () => assistant.toggleListen() },
+      { label: 'Chat history', click: () => showBar({ view: 'history', focus: true }) },
       {
         label: 'Wake word active',
         type: 'checkbox',
@@ -277,16 +247,12 @@ function buildTray() {
         click: (m) => applySettings({ wakeEnabled: m.checked })
       },
       { type: 'separator' },
-      {
-        label: 'Quit',
-        click: () => {
-          quitting = true
-          app.quit()
-        }
-      }
+      { label: 'Settings', click: () => openSettings('settings') },
+      { type: 'separator' },
+      { label: 'Quit Jarvis', click: quitJarvis }
     ])
   tray.setContextMenu(menu())
-  tray.on('click', showMain)
+  tray.on('click', toggleBar)
   assistant.settingsStore.on('change', () => tray?.setContextMenu(menu()))
 }
 
@@ -305,11 +271,6 @@ function applySettings(patch: Partial<Settings>) {
   if (patch.hotkey !== undefined) registerHotkey()
   if (patch.autoStart !== undefined) applyAutoStart()
   if (patch.quickTypeEnabled !== undefined) registerHotkey()
-  if (patch.hudStyle) hudWin?.webContents.send('hud:style', patch.hudStyle)
-  if (patch.hudCorner || patch.hudStyle) {
-    hudSig = ''
-    syncHud()
-  }
   if (patch.cloneIdleMinutes !== undefined) assistant.xtts.idleMinutes = patch.cloneIdleMinutes
   if ('fishApiKey' in patch || 'fishVoiceRu' in patch || 'fishVoiceEn' in patch || 'fishModel' in patch) {
     assistant.resetFishState()
@@ -335,9 +296,7 @@ function wireIpc() {
   ipcMain.handle(IPC.threadRename, (_e, id: string, title: string) => assistant.threads.rename(id, title))
   ipcMain.handle(IPC.models, (_e, fetchAll: boolean) => assistant.opencode.listModels(fetchAll))
   ipcMain.handle(IPC.permissionReply, (_e, id: string, answer: any) => {
-    pendingPerms.delete(id)
     toUi(IPC.permissionClose, id) // answered here → close the mirrored card in the other window too
-    syncHud()
     return assistant.replyPermission(id, answer)
   })
   ipcMain.handle(IPC.toggleListen, () => assistant.toggleListen())
@@ -422,7 +381,7 @@ function wireIpc() {
     }
   })
   ipcMain.handle(IPC.captureForUi, async () => {
-    const img = await mainWin?.webContents.capturePage()
+    const img = await (settingsWin ?? barWin)?.webContents.capturePage()
     return img?.toPNG()
   })
   ipcMain.handle('voice:extra', () => {
@@ -437,7 +396,7 @@ function wireIpc() {
     const lang = /[а-яё]/i.test(text) ? 'ru' : 'en'
     const wav = await assistant.tts.synth(text, voice, assistant.settings().voiceSpeed, lang)
     toUi('noop')
-    hudWin?.webContents.send(IPC.ttsPlay, { id: 'preview-' + Date.now(), wav, fx: assistant.settings().voiceFx, volume: assistant.settings().voiceVolume })
+    toBar(IPC.ttsPlay, { id: 'preview-' + Date.now(), wav, fx: assistant.settings().voiceFx, volume: assistant.settings().voiceVolume })
   })
   ipcMain.handle('ocr:langs', async () => {
     try {
@@ -455,11 +414,20 @@ function wireIpc() {
     if (action === 'minimize') w.minimize()
     else if (action === 'maximize') (w.isMaximized() ? w.unmaximize() : w.maximize())
     else if (action === 'close') w.close()
-    else if (action === 'showMain') showMain()
-    else if (action === 'hud-interactive') hudWin?.setIgnoreMouseEvents(false)
-    else if (action === 'hud-passthrough') !typing && pendingPerms.size === 0 && hudWin?.setIgnoreMouseEvents(true, { forward: true })
-    else if (action === 'hud-type-done') closeQuickType()
+    else if (action === 'settings') openSettings('settings')
+    else if (action === 'routines') openSettings('routines')
+    else if (action === 'memory') openSettings('memory')
+    else if (action === 'bar-hide') hideBar()
+    else if (action === 'bar-blur') barWin?.isFocused() && barWin.blur()
   })
+  // the bar reports the size of what it draws; the window follows it exactly (no invisible click-blocking area)
+  ipcMain.on('bar:size', (_e, w: number, h: number, expanded: boolean) => {
+    if (!(w > 0 && h > 0)) return
+    barSize = { width: Math.ceil(w), height: Math.ceil(h) }
+    barExpanded = !!expanded
+    placeBar()
+  })
+  ipcMain.handle('bar:geom', () => barGeometry())
 
   // audio host → speech engine
   ipcMain.on(IPC.audioChunk, (_e, buf: ArrayBuffer) => assistant.speech.feed(buf))
@@ -515,27 +483,38 @@ function wireAssistantEvents() {
   assistant.on('status', (s) => broadcast(IPC.status, s))
   assistant.on('chat', (item) => toUi(IPC.chat, item))
   assistant.on('permission', (r) => {
-    pendingPerms.add(r.id)
     toUi(IPC.permission, r)
-    syncHud()
+    showBar({ expand: true }) // an approval card must never be missed: reveal the bar with its panel open
   })
   assistant.routines.on('change', () => toUi(IPC.routinesChanged))
   assistant.threads.on('change', () => toUi(IPC.threadsChanged, assistant.threads.state()))
   assistant.on('chatReset', () => toUi(IPC.chatReset))
   assistant.memory.on('change', () => toUi(IPC.memoryChanged))
   assistant.on('permissionClose', (id) => {
-    pendingPerms.delete(id)
     toUi(IPC.permissionClose, id)
-    syncHud()
   })
   assistant.on('subtitle', (t: string) => toUi(IPC.subtitle, t))
   assistant.on('partial', (t: string) => toUi(IPC.transcript, t))
   // the HUD window also hosts the microphone and speech playback (one renderer process less)
-  assistant.on('play', (req) => hudWin?.webContents.send(IPC.ttsPlay, req))
-  assistant.on('stopPlayback', () => hudWin?.webContents.send(IPC.ttsStop))
-  assistant.on('wake', () => hudWin?.webContents.send('audio:earcon', 'wake'))
-  assistant.on('earcon', (kind: string) => hudWin?.webContents.send('audio:earcon', kind))
-  assistant.on('quickType', openQuickType)
+  assistant.on('play', (req) => toBar(IPC.ttsPlay, req))
+  assistant.on('stopPlayback', () => toBar(IPC.ttsStop))
+  // wake word or hotkey: reveal the bar in its listening state, without taking focus from the app you are in
+  assistant.on('wake', () => {
+    toBar('audio:earcon', 'wake')
+    showBar()
+  })
+  assistant.on('earcon', (kind: string) => toBar('audio:earcon', kind))
+  // Ctrl+Shift tap: the bar opens with the text box focused (the one case where it takes the keyboard)
+  assistant.on('quickType', () => showBar({ expand: true, focus: true }))
+  assistant.on('reveal', () => showBar())
+  // Esc with nothing to stop: close the open panel (the idle bar itself stays, so a stray Esc in another app can't hide it)
+  assistant.on('escIdle', () => {
+    if (barWin?.isVisible() && barExpanded) hideBar()
+  })
+  // anything you asked for (typed, spoken, a routine) brings the bar back if it was hidden
+  assistant.on('chat', (item: any) => {
+    if (item?.kind === 'user') showBar()
+  })
 }
 
 async function debugPrompts(list: string[]) {
@@ -558,71 +537,11 @@ async function debugPrompts(list: string[]) {
     await assistant.handleCommand(p, 'voice')
     await new Promise<void>((r) => assistant.opencode.once('turnEnd', () => setTimeout(r, 1500)))
   }
-  await mainWin?.webContents.executeJavaScript("window.__setPage && window.__setPage('assistant')")
-  await new Promise((r) => setTimeout(r, 800))
-  await new Promise((r) => setTimeout(r, 700))
-  if (process.env.JARVIS_SHOTS) writeFileSync(join(process.env.JARVIS_SHOTS, 'chat.png'), (await mainWin!.webContents.capturePage()).toPNG())
-  if (process.env.JARVIS_SHOTS) {
-    mainWin?.show()
-    mainWin?.setAlwaysOnTop(true, 'screen-saver') // a fullscreen video must not hide the window we are capturing
-    mainWin?.moveTop()
-    await new Promise((r) => setTimeout(r, 1200))
-    await assistant.win.call('screenshot', { path: join(process.env.JARVIS_SHOTS, 'chat-desktop.png') })
-    await mainWin?.webContents.executeJavaScript("document.querySelectorAll('.thread-bar .btn')[0]?.click(); document.querySelector('.think > button')?.click()")
-    await new Promise((r) => setTimeout(r, 900))
-    await assistant.win.call('screenshot', { path: join(process.env.JARVIS_SHOTS, 'process-desktop.png') })
-    mainWin?.setAlwaysOnTop(false)
-  }
   console.log('[e2e] finished')
 }
 
-async function debugShots(dir: string) {
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
-  await wait(7000)
-  const shot = async (w: BrowserWindow | null, name: string) => {
-    if (!w || w.isDestroyed()) return
-    const img = await w.webContents.capturePage()
-    writeFileSync(join(dir, name + '.png'), img.toPNG())
-  }
-  for (const p of ['assistant', 'routines', 'memory', 'settings']) {
-    await mainWin?.webContents.executeJavaScript(`window.__setPage && window.__setPage('${p}')`)
-    await wait(900)
-    await shot(mainWin, 'main-' + p)
-    if (p === 'settings') {
-      for (let i = 0; i < 7; i++) {
-        await mainWin?.webContents.executeJavaScript(`document.querySelectorAll('.subnav-item')[${i}]?.click()`)
-        await wait(700)
-        await shot(mainWin, 'main-settings-' + i)
-      }
-    }
-  }
-  await shot(hudWin, 'hud')
-  if (process.env.JARVIS_OVERLAY) {
-    mainWin?.show()
-    const b = mainWin!.getBounds()
-    const sf = screen.getPrimaryDisplay().scaleFactor
-    await mainWin?.webContents.executeJavaScript("window.__setPage('assistant')")
-    assistant.emit('permission', { id: 'ask-demo', kind: 'question', title: 'Мне нужно смотреть на экран и управлять мышью и клавиатурой. Разрешаете на этот чат?', options: ['Разрешить для чата', 'Отклонить'] })
-    await wait(1200)
-    await shot(hudWin, 'hud-permission')
-    await shot(mainWin, 'chat-permission')
-    await assistant.win.call('screenshot', { path: join(dir, 'desktop-permission.png') })
-    assistant.emit('permissionClose', 'ask-demo')
-    await wait(500)
-    await assistant.overlay.setControl(true, 'управляет компьютером · Ctrl+Alt+K — стоп')
-    await assistant.overlay.show([
-      { x: (b.x + 100) * sf, y: (b.y + 60) * sf, w: 360 * sf, h: 60 * sf, label: 'Orb — current state', shape: 'box' },
-      { x: (b.x + 700) * sf, y: (b.y + 500) * sf, w: 200 * sf, h: 40 * sf, label: 'Try this', shape: 'underline' }
-    ])
-    await wait(1600)
-    await assistant.win.call('screenshot', { path: join(dir, 'overlay.png') })
-    assistant.overlay.clear()
-    await assistant.overlay.setControl(false)
-  }
-  console.log('[shots] done')
-}
-
-app.on('second-instance', showMain)
+// the shortcut clicked again while Jarvis runs: bring the existing bar back (with its text box ready)
+app.on('second-instance', () => showBar({ expand: true, focus: true }))
 let cleanedUp = false
 app.on('before-quit', (e) => {
   quitting = true
@@ -632,7 +551,7 @@ app.on('before-quit', (e) => {
   cleanedUp = true
   tray?.destroy()
   tray = null
-  if (hudWin && !hudWin.isDestroyed()) hudWin.destroy()
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.destroy()
   const dispose = assistant ? assistant.dispose().catch(() => {}) : Promise.resolve()
   void Promise.race([dispose, new Promise((r) => setTimeout(r, 4000))]).finally(() => app.exit(0))
 })
@@ -645,9 +564,14 @@ app.whenReady().then(async () => {
   assistant = new Assistant()
   wireIpc()
   wireAssistantEvents()
-  createMain()
-  createHud()
+  // launched at sign-in (--hidden) or with "start hidden": wake word and hotkeys work, the bar appears when called
+  const startHidden = process.argv.includes('--hidden') || assistant.settings().startHidden
+  createBar(!startHidden)
+  // first run only: the setup (speech models, agent) lives in the settings window
+  if (!assistant.settings().setupDone) openSettings('settings')
   buildTray()
+  // automated lifecycle tests only (scripts/test-bar.mjs): lets the test press the same buttons the tray offers
+  if (process.env.JARVIS_TEST_HOOKS) (globalThis as any).__jarvisTest = { showBar, hideBar, openSettings, toggleListen: () => assistant.toggleListen(), state: () => assistant.status() }
   registerHotkey()
   applyAutoStart()
   await assistant.init()
@@ -779,21 +703,9 @@ app.whenReady().then(async () => {
       .then((b) => console.log(`[clone-test] OK ${b.length} bytes in ${Date.now() - t0}ms`))
       .catch((e) => console.log('[clone-test] FAILED', e.message))
   }
-  if (process.env.JARVIS_NARROW) {
-    await new Promise((r) => setTimeout(r, 9000))
-    mainWin?.setMinimumSize(560, 600)
-    mainWin?.setSize(680, 760)
-    await new Promise((r) => setTimeout(r, 1200))
-    await mainWin?.webContents.executeJavaScript("window.__setPage('assistant'); window.__demoLong(); setTimeout(() => { const f=document.querySelector('.feed'); f && (f.scrollTop=f.scrollHeight) }, 300)")
-    await new Promise((r) => setTimeout(r, 800))
-    writeFileSync(join(process.env.JARVIS_NARROW, 'narrow.png'), (await mainWin!.webContents.capturePage()).toPNG())
-    const info = await mainWin?.webContents.executeJavaScript("(() => { const m=[...document.querySelectorAll('.msg.assistant')].pop(); if(!m) return 'no msg'; const c=m.querySelector('.clamp'); const b=m.querySelector('.more'); const r=(e)=>e&&JSON.stringify(e.getBoundingClientRect()); return 'msg '+r(m)+' clamp '+r(c)+' more '+r(b)+' display:'+getComputedStyle(m).display })()")
-    console.log('[narrow]', info)
-    await mainWin?.webContents.executeJavaScript("document.querySelectorAll('.thread-bar .btn')[0]?.click()")
-    await new Promise((r) => setTimeout(r, 1200))
-    writeFileSync(join(process.env.JARVIS_NARROW, 'drawer.png'), (await mainWin!.webContents.capturePage()).toPNG())
+  if (process.env.JARVIS_PROMO) {
+    openSettings()
+    void import('./promo').then((m) => m.runPromo({ win: () => settingsWin!, assistant, out: process.env.JARVIS_PROMO! }))
   }
-  if (process.env.JARVIS_PROMO) void import('./promo').then((m) => m.runPromo({ win: () => mainWin!, assistant, out: process.env.JARVIS_PROMO! }))
-  if (process.env.JARVIS_SHOTS) void debugShots(process.env.JARVIS_SHOTS)
   if (process.env.JARVIS_PROMPTS) void debugPrompts(JSON.parse(process.env.JARVIS_PROMPTS))
 })

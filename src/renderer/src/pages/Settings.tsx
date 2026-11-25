@@ -225,14 +225,6 @@ export function SettingsPage() {
                   </Row>
                 </Group>
                 <Group title={t('sg.startup')}>
-                  <Row label="On-screen style" hint="Bar: a small black bar at the top of the screen, still while idle. Orb: the animated orb in a corner (uses more CPU).">
-                    <Seg value={s.hudStyle} options={[['pill', 'Bar'], ['orb', 'Orb']]} onChange={(v) => patch({ hudStyle: v })} />
-                  </Row>
-                  {s.hudStyle === 'orb' && (
-                    <Row label={t('settings.hud')}>
-                      <Seg value={s.hudCorner} options={[['tl', '↖'], ['tr', '↗'], ['bl', '↙'], ['br', '↘']]} onChange={(v) => patch({ hudCorner: v })} />
-                    </Row>
-                  )}
                   <Row label={t('settings.subtitles')}>
                     <Switch on={s.showSubtitles} onChange={(v) => patch({ showSubtitles: v })} />
                   </Row>
@@ -240,7 +232,7 @@ export function SettingsPage() {
                     <Switch on={s.autoStart} onChange={(v) => patch({ autoStart: v })} />
                   </Row>
                   <Row label={t('settings.startMin')}>
-                    <Switch on={s.startMinimized} onChange={(v) => patch({ startMinimized: v })} />
+                    <Switch on={s.startHidden} onChange={(v) => patch({ startHidden: v })} />
                   </Row>
                 </Group>
               </>

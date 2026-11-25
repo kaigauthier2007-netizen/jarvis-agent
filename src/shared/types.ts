@@ -22,6 +22,8 @@ export interface Settings {
   theme: 'dark' | 'light' | 'system'
   autoStart: boolean
   startMinimized: boolean
+  /** launch with the bar hidden (wake word and hotkeys still work) */
+  startHidden: boolean
   permissionMode: 'ask' | 'safe-auto' | 'full-auto'
   showSubtitles: boolean
   hudCorner: 'br' | 'bl' | 'tr' | 'tl'
@@ -134,6 +136,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: 'dark',
   autoStart: false,
   startMinimized: false,
+  startHidden: false,
   permissionMode: 'safe-auto',
   showSubtitles: true,
   hudCorner: 'br',

@@ -3,9 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { AnimatePresence, motion } from 'framer-motion'
 import './styles.css'
 import { bootstrap, useApp, useT } from './store'
+import { api } from './api'
 import { TitleBar, Rail } from './components/Shell'
 import { SetupModal } from './components/Overlays'
-import { AssistantPage } from './pages/Assistant'
 import { RoutinesPage } from './pages/Routines'
 import { MemoryPage } from './pages/Memory'
 import { SettingsPage } from './pages/Settings'
@@ -20,6 +20,10 @@ function App() {
   const { t } = useT()
 
   useEffect(() => {
+    // this window opens on demand (tray / bar): start on the page that was asked for
+    const want = new URLSearchParams(location.search).get('page')
+    if (want === 'routines' || want === 'memory' || want === 'settings') useApp.getState().setPage(want)
+    api.on('app:page', (p: any) => useApp.getState().setPage(p))
     void bootstrap({ chat: true })
     ;(window as any).__setPage = (p: any) => useApp.getState().setPage(p)
     ;(window as any).__app = useApp
@@ -63,16 +67,16 @@ npx: 11.9.0
   useEffect(() => applyTheme(settings.accent, settings.theme), [settings.accent, settings.theme])
 
   if (!ready) return null
-  const pages = { assistant: <AssistantPage />, routines: <RoutinesPage />, memory: <MemoryPage />, settings: <SettingsPage /> }
+  const pages = { assistant: <SettingsPage />, routines: <RoutinesPage />, memory: <MemoryPage />, settings: <SettingsPage /> }
   return (
     <div className="app">
       <TitleBar />
       <div className="body">
         <Rail />
         <main className="content">
-          {status.speech === 'missing-models' && !setupOpen && page === 'assistant' && <ModelsBanner />}
+          {status.speech === 'missing-models' && !setupOpen && <ModelsBanner />}
           <AnimatePresence mode="wait">
-            <motion.div key={page} style={{ height: status.speech === 'missing-models' && page === 'assistant' ? 'calc(100% - 52px)' : '100%' }} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22 }}>
+            <motion.div key={page} style={{ height: status.speech === 'missing-models' ? 'calc(100% - 52px)' : '100%' }} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22 }}>
               {pages[page]}
             </motion.div>
           </AnimatePresence>

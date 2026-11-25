@@ -112,7 +112,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "madonchik123",
+        "owner": "kaigauthier2007-netizen",
         "repo": "jarvis-agent"
       }
     ]

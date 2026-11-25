@@ -40,7 +40,7 @@ export const useApp = create<AppState>((set, get) => ({
   ready: false,
   settings: DEFAULT_SETTINGS,
   status: baseStatus,
-  page: 'assistant',
+  page: 'settings',
   chat: [],
   permissions: [],
   subtitle: '',
@@ -90,7 +90,7 @@ export function upsertChat(list: ChatItem[], item: ChatItem): ChatItem[] {
 }
 
 /** Subscribes the store to main-process events. Call once per window. */
-export async function bootstrap(opts: { chat?: boolean } = {}) {
+export async function bootstrap(opts: { chat?: boolean; lite?: boolean } = {}) {
   const st = useApp
   const settings: Settings = (await api.invoke(IPC.settingsGet)) ?? DEFAULT_SETTINGS
   const status: AppStatus = (await api.invoke('status:get')) ?? baseStatus
@@ -110,6 +110,11 @@ export async function bootstrap(opts: { chat?: boolean } = {}) {
     api.on(IPC.chatReset, () => void st.getState().loadChat())
     api.on(IPC.threadsChanged, (t: ThreadState) => st.setState({ threads: t }))
     await st.getState().loadChat()
+    if (opts.lite) {
+      // the bar: chat + threads + speech-model state only (no model list: that would wake the agent server for nothing)
+      await st.getState().loadAssets()
+      return
+    }
     await Promise.all([st.getState().loadRoutines(), st.getState().loadMemory(), st.getState().loadAssets(), st.getState().fetchModels(false)])
     api.on(IPC.routinesChanged, () => void st.getState().loadRoutines())
     api.on(IPC.memoryChanged, () => void st.getState().loadMemory())

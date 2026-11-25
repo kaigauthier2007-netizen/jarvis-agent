@@ -33,7 +33,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
           overlay: resolve(__dirname, 'src/renderer/overlay.html'),
-          hud: resolve(__dirname, 'src/renderer/hud.html'),
+          bar: resolve(__dirname, 'src/renderer/bar.html'),
           update: resolve(__dirname, 'src/renderer/update.html'),
           audio: resolve(__dirname, 'src/renderer/audio.html')
         }

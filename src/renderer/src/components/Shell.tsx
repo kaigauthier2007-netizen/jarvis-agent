@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Brain, Minus, MessageSquare, Settings as Cog, Square, X, Zap } from 'lucide-react'
+import { Brain, Minus, Settings as Cog, Square, X, Zap } from 'lucide-react'
 import { api, IPC } from '../api'
 import { Page, useApp, useT } from '../store'
 
@@ -27,7 +27,6 @@ export function TitleBar() {
 }
 
 const items: { id: Page; icon: typeof Brain; key: string }[] = [
-  { id: 'assistant', icon: MessageSquare, key: 'nav.assistant' },
   { id: 'routines', icon: Zap, key: 'nav.routines' },
   { id: 'memory', icon: Brain, key: 'nav.memory' }
 ]
@@ -38,7 +37,7 @@ export function Rail() {
   const { t } = useT()
   const Btn = ({ id, icon: Icon, label }: { id: Page; icon: typeof Brain; label: string }) => (
     <button className={'navbtn' + (page === id ? ' active' : '')} onClick={() => setPage(id)}>
-      {page === id && <motion.span layoutId="nav-pill" className="pill" transition={{ type: 'spring', stiffness: 420, damping: 36 }} />}
+      {page === id && <motion.span layoutId="nav-pill" className="navpill" transition={{ type: 'spring', stiffness: 420, damping: 36 }} />}
       <Icon size={21} strokeWidth={1.7} />
       {label}
     </button>

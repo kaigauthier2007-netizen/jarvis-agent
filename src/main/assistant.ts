@@ -382,7 +382,8 @@ export class Assistant extends EventEmitter implements Hub {
     if (!this.settings().escStops) return
     if (this.guideCancel) return this.guideCancel()
     const busy = this.opencode?.isBusy || this.speakingDepth > 0 || this.state !== 'idle'
-    if (!busy) return
+    // nothing to stop: the bar may use Esc to hide its open panel
+    if (!busy) return void this.emit('escIdle')
     if (this.state === 'listening' && !this.opencode?.isBusy) {
       this.speech.cancelListen()
       this.setState('idle')
@@ -401,6 +402,7 @@ export class Assistant extends EventEmitter implements Hub {
     this.guideCancel?.()
     this.teaching = say
     this.emitStatus()
+    this.emit('reveal') // the step instructions are in the bar: make sure it is on screen
     await this.overlay.show([{ ...target, shape: target.shape ?? 'circle' }], 0)
     void this.say(say)
     const pad = 14
